@@ -1,0 +1,50 @@
+
+name: Build MediaHub Windows EXE
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore src/MediaHub/MediaHub.csproj
+
+      - name: Publish Windows EXE
+        run: >
+          dotnet publish src/MediaHub/MediaHub.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -o artifacts/publish
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item README.md artifacts/publish/README.txt
+          Compress-Archive -Path artifacts/publish/* -DestinationPath MediaHub-win-x64.zip -Force
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaHub-win-x64
+          path: MediaHub-win-x64.zip
