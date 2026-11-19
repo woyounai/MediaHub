@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MediaHub NAS</title>
+<style>
+:root{--nav:#17283c;--blue:#3478c8;--bg:#f3f5f8;--line:#e4e9f0;--muted:#718096;--text:#253244;--white:#fff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);font:14px "Segoe UI","Microsoft YaHei",sans-serif;color:var(--text)}
+header{height:66px;background:var(--nav);color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 22px}
+.brand{font-weight:750;font-size:20px;letter-spacing:1px}.sub{font-size:12px;color:#bac8d8;margin-top:3px}
+.layout{display:grid;grid-template-columns:220px minmax(420px,1fr) 270px;gap:14px;max-width:1600px;margin:18px auto;padding:0 16px;min-height:calc(100vh - 100px)}
+.panel{background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 2px 8px #1b2b4008}
+aside{padding:15px}.navtitle{font-size:12px;color:var(--muted);font-weight:700;margin:6px 8px 12px}
+.nav button{display:block;width:100%;text-align:left;border:0;background:none;padding:10px 11px;border-radius:8px;color:#3a485a;cursor:pointer}
+.nav button.active,.nav button:hover{background:#eaf2fc;color:#2165b4;font-weight:600}
+main{padding:16px;min-width:0}.toolbar{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
+button{border:1px solid #d7e0ea;background:white;border-radius:8px;padding:8px 11px;color:#344256;cursor:pointer}
+button:hover{filter:brightness(.97)}button.primary{background:var(--blue);border-color:var(--blue);color:white}button.danger{color:#b42318;border-color:#efc8c4}
+input,select{border:1px solid #d7e0ea;border-radius:8px;padding:9px;font:inherit;min-width:0}
+.drop{border:2px dashed #a9c3e2;background:#f4f8fd;padding:17px;border-radius:10px;text-align:center;color:#315f91;margin-bottom:12px}
+.drop.hover{background:#e6f1ff}.muted{font-size:12px;color:var(--muted)}
+.filters{display:flex;gap:8px;margin-bottom:10px}.filters input{flex:1}
+.tablewrap{overflow:auto;max-height:calc(100vh - 280px)}table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;background:#f7f9fb;color:#68788d;position:sticky;top:0}
+th,td{padding:10px 9px;border-bottom:1px solid var(--line);white-space:nowrap}tbody tr{cursor:pointer}tbody tr:hover,tbody tr.sel{background:#edf4fd}
+.smallstatus{font-size:12px;color:#16845b}.bad{color:#b42318}
+.details h3{margin:4px 0 18px}.field{margin:0 0 15px}.field label{font-size:11px;color:var(--muted);display:block;margin-bottom:5px}.field div{font-size:12px;word-break:break-all;background:#f7f9fb;padding:8px;border-radius:7px}
+.modalbg{position:fixed;inset:0;background:#10182888;display:none;align-items:center;justify-content:center;padding:15px;z-index:10}.modal{width:min(780px,96vw);max-height:88vh;overflow:auto;background:white;border-radius:14px;padding:18px}.modalhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.modalgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.modalgrid label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}.modalgrid input,.modalgrid select{width:100%}.browserlist{max-height:54vh;overflow:auto;border:1px solid var(--line);border-radius:8px}.entry{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 11px;border-bottom:1px solid var(--line)}.entry:last-child{border:0}.entry button{padding:5px 9px}.login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:20}.loginbox{width:min(420px,92vw);background:#fff;border:1px solid var(--line);border-radius:14px;padding:26px}.loginbox input{width:100%;margin:8px 0 12px}.loginbox button{width:100%}.toast{position:fixed;bottom:18px;right:18px;background:#17283c;color:white;padding:12px 16px;border-radius:9px;display:none;z-index:30}
+@media(max-width:1050px){.layout{grid-template-columns:180px 1fr}.details{grid-column:1/-1}}@media(max-width:700px){.layout{grid-template-columns:1fr}.sidebar{order:0}.details{grid-column:auto}.nav{display:grid;grid-template-columns:repeat(3,1fr)}}
+</style></head>
+<body>
+<header><div><div class="brand">MEDIAHUB NAS</div><div class="sub">家庭文件中心 · 原始文件管理 · SMB</div></div><div id="server" class="sub">服务未连接</div></header>
+<div id="login" class="login"><div class="loginbox"><h2>连接 MediaHub</h2><p class="muted">输入 MediaHub.exe 控制台显示的 API Key。</p><input id="key" type="password" placeholder="API Key"><button class="primary" id="connect">连接服务器</button><p class="muted" id="loginErr"></p></div></div>
+<div class="layout">
+<aside class="panel sidebar"><div class="navtitle">文件分类</div><div class="nav" id="nav"></div><hr style="border:0;border-top:1px solid var(--line);margin:14px 0"><div class="navtitle">系统管理</div><div class="nav"><button id="smbBtn">▤ SMB 共享</button><button id="watchBtn">◷ 文件夹监控</button><button id="logsBtn">☷ 操作日志</button><button id="startupBtn">⚙ 开机启动</button></div></aside>
+<main class="panel">
+<div class="toolbar">
+<button class="primary" id="browseBtn">浏览服务器文件</button><button id="indexBtn">索引当前目录</button><button id="mkdirBtn">新建文件夹</button><button id="refreshBtn">刷新</button><button id="uploadBtn">上传文件</button><button id="renameBtn">重命名</button><button id="moveBtn">移动</button><button id="copyBtn">复制</button><button class="danger" id="deleteBtn">删除到回收站</button><button id="unindexBtn">移除索引</button>
+<input type="file" id="fileInput" multiple hidden>
+</div>
+<div class="drop" id="drop"><b>拖放文件上传到当前目录</b><div class="muted">原文件上传到服务器；若要索引服务器已有文件，请使用“浏览服务器文件”。</div></div>
+<div class="filters"><input id="search" placeholder="搜索已索引文件名或路径"><select id="category"><option value="">全部分类</option></select><span class="muted" id="count" style="white-space:nowrap;align-self:center">0 项</span></div>
+<div class="tablewrap"><table><thead><tr><th>分类</th><th>名称</th><th>原始路径</th><th>大小</th><th>状态</th></tr></thead><tbody id="rows"></tbody></table></div>
+</main>
+<aside class="panel details"><h3>文件详情</h3><div class="field"><label>名称</label><div id="dName">未选择</div></div><div class="field"><label>原始路径</label><div id="dPath">—</div></div><div class="field"><label>分类</label><div id="dCat">—</div></div><div class="field"><label>大小</label><div id="dSize">—</div></div><div class="field"><label>最后修改</label><div id="dModified">—</div></div><div class="muted">删除会操作原始文件并尝试送入 Windows 回收站。移除索引不会删除原始文件。</div></aside>
+</div>
+<div class="modalbg" id="browserModal"><div class="modal"><div class="modalhead"><b>服务器文件浏览器</b><button data-close="browserModal">关闭</button></div><div class="muted" id="crumb"></div><div style="display:flex;gap:8px;margin:10px 0"><button id="parent">上一级</button><input id="browsePath" style="flex:1" placeholder="输入服务器路径"><button id="goPath">前往</button></div><div id="browserList" class="browserlist"></div><p class="muted">“索引”只建立数据库记录，不复制或移动原文件。文件夹可递归索引。</p></div></div>
+<div class="modalbg" id="smbModal"><div class="modal"><div class="modalhead"><b>SMB 共享管理</b><button data-close="smbModal">关闭</button></div><div class="modalgrid">
+<div><label>共享名称</label><input id="smbName" placeholder="Videos"></div><div><label>真实文件夹路径</label><input id="smbPath" placeholder="D:\Videos"></div>
+<div><label>Windows 账户</label><input id="smbAccount" placeholder="COMPUTER\media"></div><div><label>共享权限</label><select id="smbAccess"><option value="Read">只读</option><option value="Change" selected>读写</option></select></div>
+</div><button class="primary" id="createShare" style="margin:12px 0">创建真实目录共享</button><div id="shares"></div><p class="muted">创建/删除 SMB 共享需要以管理员身份运行 EXE。共享权限与 NTFS 权限共同决定最终访问权限。</p></div></div>
+<div class="modalbg" id="watchModal"><div class="modal"><div class="modalhead"><b>文件夹自动监控</b><button data-close="watchModal">关闭</button></div><div style="display:flex;gap:8px"><input id="watchPath" style="flex:1" placeholder="D:\Movies"><button class="primary" id="addWatch">添加监控</button></div><div id="watches" style="margin-top:12px"></div></div></div>
+<div class="modalbg" id="logsModal"><div class="modal"><div class="modalhead"><b>操作日志</b><button data-close="logsModal">关闭</button></div><div id="logs"></div></div></div>
+<div class="toast" id="toast"></div>
+<script>
+const cats=["全部文件","电影","电视剧","动漫","照片","视频","音乐","文档","其他","文件夹"];
+let key=localStorage.getItem("mh_api_key")||"",items=[],selected=null,activeCat="全部文件",currentDir="";
+const $=id=>document.getElementById(id);
+function toast(s){$("toast").textContent=s;$("toast").style.display="block";setTimeout(()=>$("toast").style.display="none",2800)}
+async function api(url,opt={}){opt.headers=Object.assign({"X-MediaHub-Key":key},opt.headers||{});let r=await fetch(url,opt);let data;try{data=await r.json()}catch{data={error:r.statusText}}if(!r.ok)throw Error(data.error||r.statusText);return data}
+function enc(s){return encodeURIComponent(s)}
+function fmt(n){if(n===null||n===undefined)return "—";let u=["B","KB","MB","GB","TB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i?1:0)+" "+u[i]}
+function renderNav(){$("nav").innerHTML="";cats.forEach(c=>{let b=document.createElement("button");b.textContent=c;b.className=c===activeCat?"active":"";b.onclick=()=>{activeCat=c;renderNav();renderRows()};$("nav").append(b)})}
+function renderRows(){let q=$("search").value.toLowerCase(),cat=$("category").value;let list=items.filter(x=>(activeCat==="全部文件"||x.category===activeCat)&&(!cat||x.category===cat)&&(!q||(x.name+" "+x.path).toLowerCase().includes(q)));$("rows").innerHTML="";list.forEach(x=>{let tr=document.createElement("tr");if(selected?.id===x.id)tr.className="sel";[x.category,x.name,x.path,fmt(x.size),x.exists?"正常":"已不存在"].forEach((v,i)=>{let td=document.createElement("td");td.textContent=v;if(i===4)td.className="smallstatus"+(x.exists?"":" bad");tr.append(td)});tr.onclick=()=>{selected=x;renderRows();renderDetails()};tr.ondblclick=()=>{if(x.isDirectory){$("browserModal").style.display="flex";browse(x.path)}else download(x.path)};$("rows").append(tr)});$("count").textContent=`${list.length} / ${items.length} 项`}
+function renderDetails(){let x=selected;$("dName").textContent=x?.name||"未选择";$("dPath").textContent=x?.path||"—";$("dCat").textContent=x?.category||"—";$("dSize").textContent=x?.isDirectory?"文件夹":fmt(x?.size);$("dModified").textContent=x?.modifiedUtc?new Date(x.modifiedUtc).toLocaleString():"—"}
+async function refresh(){let d=await api("/api/items?search="+enc($("search").value)+"&category=");items=d.items||[];if(selected)selected=items.find(x=>x.id===selected.id)||null;$("category").innerHTML='<option value="">全部分类</option>'+cats.slice(1).map(c=>`<option value="${c}">${c}</option>`).join("");renderRows();renderDetails();let c=await api("/api/config");$("server").textContent=`${c.computerName} · ${c.isAdministrator?"管理员":"普通权限"} · ${c.roots.join(" ")}`}
+async function connect(){key=$("key").value.trim();try{await refresh();localStorage.setItem("mh_api_key",key);$("login").style.display="none";$("loginErr").textContent=""}catch(e){$("loginErr").textContent=e.message}}
+$("connect").onclick=connect;if(key){$("key").value=key;connect()}
+$("refreshBtn").onclick=()=>refresh().catch(e=>toast(e.message));$("search").oninput=()=>renderRows();$("category").onchange=renderRows;
+async function browse(path){try{let d=await api("/api/browse?path="+enc(path||""));currentDir=d.current||"";$("browsePath").value=currentDir;$("crumb").textContent=currentDir||"我的电脑 / 磁盘";$("parent").disabled=!d.parent;$("parent").onclick=()=>browse(d.parent);$("browserList").innerHTML="";d.entries.forEach(e=>{let row=document.createElement("div");row.className="entry";let name=document.createElement("span");name.textContent=(e.isDirectory?"📁 ":"📄 ")+e.name;let actions=document.createElement("span");if(e.isDirectory){let open=document.createElement("button");open.textContent="打开";open.onclick=()=>browse(e.path);actions.append(open)}let index=document.createElement("button");index.textContent="索引";index.onclick=()=>indexPath(e.path,e.isDirectory);actions.append(index);row.append(name,actions);$("browserList").append(row)})}catch(e){toast(e.message)}}
+async function indexPath(path,recursive){try{let d=await api("/api/index",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path,recursive})});toast("索引完成："+d.indexed+" 项");await refresh()}catch(e){toast("索引失败："+e.message)}}
+$("browseBtn").onclick=()=>{$("browserModal").style.display="flex";browse(currentDir)};$("goPath").onclick=()=>browse($("browsePath").value);$("browsePath").onkeydown=e=>{if(e.key==="Enter")browse($("browsePath").value)};
+document.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>$(b.dataset.close).style.display="none");
+$("indexBtn").onclick=()=>{if(!currentDir){toast("请先打开服务器文件浏览器并选择目录");return}indexPath(currentDir,true)};
+$("mkdirBtn").onclick=async()=>{let parent=currentDir||await chooseDir();if(!parent)return;let name=prompt("新文件夹名称");if(!name)return;try{let d=await api("/api/files/folder",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({parent,name})});await refresh();toast("已创建："+d.path)}catch(e){toast(e.message)}};
+$("unindexBtn").onclick=async()=>{if(!selected)return toast("请先选择文件");if(!confirm("只移除索引记录，不删除原文件？"))return;try{await api("/api/index",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:selected.path})});selected=null;await refresh();toast("索引已移除")}catch(e){toast(e.message)}};
+$("deleteBtn").onclick=async()=>{if(!selected)return toast("请先选择文件");if(!confirm("确定将原始文件移入 Windows 回收站？\n"+selected.path))return;try{await api("/api/files",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:selected.path})});selected=null;await refresh();toast("已提交回收站")}catch(e){toast(e.message)}};
+$("renameBtn").onclick=async()=>{if(!selected)return toast("请先选择文件");let n=prompt("输入新名称",selected.name);if(!n)return;try{await api("/api/files/rename",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:selected.path,newName:n})});selected=null;await refresh();toast("重命名完成")}catch(e){toast(e.message)}};
+async function chooseDir(){let p=prompt("输入目标文件夹的服务器路径",currentDir||"C:\\");return p}
+async function moveCopy(which){if(!selected)return toast("请先选择文件");let dest=await chooseDir();if(!dest)return;try{let d=await api("/api/files/"+which,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:selected.path,destinationDirectory:dest})});await refresh();toast((which==="move"?"移动":"复制")+"完成："+d.path)}catch(e){toast(e.message)}}
+$("moveBtn").onclick=()=>moveCopy("move");$("copyBtn").onclick=()=>moveCopy("copy");
+async function download(path){try{let r=await fetch("/api/files/download?path="+enc(path),{headers:{"X-MediaHub-Key":key}});if(!r.ok){let d=await r.json();throw Error(d.error||r.statusText)}let blob=await r.blob();let url=URL.createObjectURL(blob);let a=document.createElement("a");a.href=url;a.download=path.split(/[\\\\/]/).pop();document.body.append(a);a.click();a.remove();URL.revokeObjectURL(url)}catch(e){toast("下载失败："+e.message)}}
+$("uploadBtn").onclick=()=>$("fileInput").click();
+async function uploadFiles(files){for(let f of files){let form=new FormData();form.append("file",f);form.append("directory",currentDir||"");try{let r=await fetch("/api/files/upload",{method:"POST",headers:{"X-MediaHub-Key":key},body:form});let d=await r.json();if(!r.ok)throw Error(d.error);toast("上传完成："+d.name)}catch(e){toast("上传失败："+e.message)}}await refresh()}
+$("fileInput").onchange=e=>uploadFiles(e.target.files);
+const drop=$("drop");drop.ondragover=e=>{e.preventDefault();drop.classList.add("hover")};drop.ondragleave=()=>drop.classList.remove("hover");drop.ondrop=e=>{e.preventDefault();drop.classList.remove("hover");uploadFiles(e.dataTransfer.files)};
+$("smbBtn").onclick=async()=>{$("smbModal").style.display="flex";try{let d=await api("/api/smb/shares");$("shares").innerHTML="";(d.shares||[]).forEach(s=>{let row=document.createElement("div");row.className="entry";let t=document.createElement("span");t.textContent=s.name+" — "+s.path;let del=document.createElement("button");del.textContent="删除共享";del.onclick=async()=>{if(confirm("只删除 SMB 共享，不删除文件？")){try{await api("/api/smb/shares/"+enc(s.name),{method:"DELETE"});$("smbBtn").click()}catch(e){toast(e.message)}}};row.append(t,del);$("shares").append(row)})}catch(e){$("shares").textContent=e.message}};
+$("createShare").onclick=async()=>{try{let d=await api("/api/smb/shares",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:$("smbName").value,path:$("smbPath").value,account:$("smbAccount").value,access:$("smbAccess").value})});toast("共享创建："+d.unc);$("smbBtn").click()}catch(e){toast(e.message)}};
+$("watchBtn").onclick=async()=>{$("watchModal").style.display="flex";await loadWatches()};
+async function loadWatches(){try{let d=await api("/api/automation/watches");$("watches").innerHTML="";d.watches.forEach(w=>{let row=document.createElement("div");row.className="entry";let t=document.createElement("span");t.textContent=w.path;let b=document.createElement("button");b.textContent="移除";b.onclick=async()=>{await api("/api/automation/watches/"+w.id,{method:"DELETE"});loadWatches()};row.append(t,b);$("watches").append(row)})}catch(e){$("watches").textContent=e.message}}
+$("addWatch").onclick=async()=>{try{await api("/api/automation/watches",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:$("watchPath").value})});await loadWatches();toast("已添加监控")}catch(e){toast(e.message)}};
+$("logsBtn").onclick=async()=>{$("logsModal").style.display="flex";try{let d=await api("/api/logs");$("logs").innerHTML=d.logs.map(x=>`<div class="entry"><span>${x.action} · ${x.path}<div class="muted">${x.detail} · ${new Date(x.createdUtc).toLocaleString()}</div></span></div>`).join("")}catch(e){$("logs").textContent=e.message}};
+$("startupBtn").onclick=async()=>{if(!confirm("设置 MediaHub 随当前 Windows 用户登录时启动？"))return;try{await api("/api/automation/startup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true})});toast("已设置开机启动")}catch(e){toast(e.message)}};
+renderNav();
+</script></body></html>
