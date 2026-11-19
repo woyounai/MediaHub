@@ -5,10 +5,21 @@ using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.VisualBasic.FileIO;
 using Microsoft.Win32;
 
+if (args.Length == 2 && args[0] == "--index")
+{
+    using var client = new HttpClient();
+    client.DefaultRequestHeaders.Add("X-MediaHub-Key", File.ReadAllText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediaHub", "api.key")).Trim());
+    var servicePort = Environment.GetEnvironmentVariable("MEDIAHUB_PORT") ?? "8765";
+    var response = await client.PostAsJsonAsync($"http://127.0.0.1:{servicePort}/api/index", new { path = args[1], recursive = true });
+    if (!response.IsSuccessStatusCode) System.Windows.Forms.MessageBox.Show(await response.Content.ReadAsStringAsync(), "加入索引失败");
+    return;
+}
+ExplorerIndexMenu.Register();
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 20L * 1024 * 1024 * 1024);
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 20L * 1024 * 1024 * 1024);
@@ -24,6 +35,7 @@ db.Initialize();
 
 var apiKey = paths.GetOrCreateApiKey();
 var port = int.TryParse(Environment.GetEnvironmentVariable("MEDIAHUB_PORT"), out var p) ? p : 8765;
+DlnaService.Map(app, port);
 app.Urls.Clear();
 app.Urls.Add($"http://0.0.0.0:{port}");
 
@@ -55,6 +67,7 @@ app.MapGet("/api/config", () => Results.Ok(new
     version = "0.1.0",
     port,
     computerName = Environment.MachineName,
+    currentAccount = WindowsIdentity.GetCurrent().Name,
     dataDirectory = paths.DataDirectory,
     inbox = paths.InboxDirectory,
     isAdministrator = WindowsIdentity.GetCurrent().Owner is not null &&
@@ -119,7 +132,7 @@ app.MapGet("/api/browse", (string? path) =>
     catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
 
-app.MapPost("/api/index", (IndexRequest request) =>
+app.MapPost("/api/index", async (IndexRequest request) =>
 {
     try
     {
@@ -127,18 +140,72 @@ app.MapPost("/api/index", (IndexRequest request) =>
         if (!File.Exists(full) && !Directory.Exists(full))
             return Results.NotFound(new { error = "原始文件或文件夹不存在。" });
         var count = FileIndexer.Index(full, db, request.Recursive);
+        await SmbPublisher.PublishAsync(db);
         db.Log("index", full, $"Indexed {count} item(s)");
         return Results.Ok(new { ok = true, indexed = count, total = db.CountItems() });
     }
     catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
 
-app.MapDelete("/api/index", (PathRequest request) =>
+app.MapPost("/api/index/description", (DescriptionRequest request) =>
+{
+    if (request.Description is null || request.Description.Length > 4000) return Results.BadRequest(new { error = "描述最多 4000 字。" });
+    return db.SetDescription(request.Id, request.Description) ? Results.Ok(new { ok = true }) : Results.NotFound();
+});
+app.MapPost("/api/index/display-name", (DisplayNameRequest request) =>
+{
+    if (request.Id <= 0 || request.Name is null || request.Name.Trim().Length > 255 || request.Name.Any(char.IsControl))
+        return Results.BadRequest(new { error = "显示名称最多 255 字，留空恢复真实文件名。" });
+    return db.SetDisplayName(request.Id, request.Name.Trim()) ? Results.Ok(new { ok = true }) : Results.NotFound();
+});
+app.MapPost("/api/index/file-name", async (DisplayNameRequest request) =>
+{
+    if (request.Id <= 0 || request.Name is null || request.Name.Trim().Length > 255 || request.Name.Any(char.IsControl))
+        return Results.BadRequest(new { error = "显示名称最多 255 字，不能包含控制字符。留空可恢复原名称。" });
+    try
+    {
+        var oldPath = db.RenameIndexedFile(request.Id, request.Name.Trim());
+        if (oldPath is null) return Results.NotFound(new { error = "索引不存在，请刷新。" });
+        await SmbPublisher.RemoveLinksAsync(oldPath);
+        await SmbPublisher.PublishAsync(db);
+        return Results.Ok(new { ok = true });
+    }
+    catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+
+app.MapPost("/api/index/category", async (ChangeCategoryRequest request) =>
+{
+    if (request.Ids is null || request.Ids.Length is < 1 or > 10000 || request.Ids.Any(id => id <= 0) ||
+        !new[] { "电影", "电视剧", "动漫", "照片", "视频", "音乐", "文档", "其他", "文件夹" }.Contains(request.Category))
+        return Results.BadRequest(new { error = "请选择索引及有效分类。" });
+    try
+    {
+        var changed = db.ChangeCategory(request.Ids.Distinct(), request.Category);
+        await SmbPublisher.PublishAsync(db);
+        return Results.Ok(new { ok = true, changed });
+    }
+    catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+
+app.MapPost("/api/index/batch-delete", async (BatchIndexDeleteRequest request) =>
+{
+    if (request.Ids is null || request.Ids.Length == 0 || request.Ids.Length > 10000 || request.Ids.Any(id => id <= 0))
+        return Results.BadRequest(new { error = "请选择 1 至 10000 项索引。" });
+    try
+    {
+        var removed = await SmbPublisher.RemoveIndexesAsync(db, request.Ids);
+        db.Log("unindex-batch", "", $"Removed {removed} index records; originals unchanged");
+        return Results.Ok(new { ok = true, removed });
+    }
+    catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+
+app.MapDelete("/api/index", async ([FromBody] PathRequest request) =>
 {
     try
     {
         var full = PathGuard.EnsureAllowed(request.Path);
-        var removed = db.RemovePathAndChildren(full);
+        var removed = await SmbPublisher.RemoveIndexesAsync(db, path: full);
         db.Log("unindex", full, $"Removed {removed} index record(s); originals unchanged");
         return Results.Ok(new { ok = true, removed });
     }
@@ -199,27 +266,6 @@ app.MapPost("/api/files/folder", (CreateFolderRequest request) =>
     catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
 
-app.MapPost("/api/files/rename", (RenameRequest request) =>
-{
-    try
-    {
-        var source = PathGuard.EnsureAllowed(request.Path);
-        PathGuard.EnsureNotDriveRoot(source);
-        if (!File.Exists(source) && !Directory.Exists(source)) return Results.NotFound(new { error = "源文件不存在。" });
-        var name = Path.GetFileName(request.NewName.Trim());
-        if (string.IsNullOrWhiteSpace(name) || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-            return Results.BadRequest(new { error = "新名称无效。" });
-        var destination = Path.Combine(Path.GetDirectoryName(source)!, name);
-        if (File.Exists(destination) || Directory.Exists(destination)) return Results.Conflict(new { error = "目标名称已存在。" });
-        if (Directory.Exists(source)) Directory.Move(source, destination); else File.Move(source, destination);
-        db.RemovePathAndChildren(source);
-        FileIndexer.Index(destination, db, true);
-        db.Log("rename", destination, $"Renamed from {source}");
-        return Results.Ok(new { ok = true, path = destination });
-    }
-    catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
-});
-
 app.MapPost("/api/files/move", (MoveRequest request) =>
 {
     try
@@ -258,7 +304,7 @@ app.MapPost("/api/files/copy", (MoveRequest request) =>
     catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
 
-app.MapDelete("/api/files", (PathRequest request) =>
+app.MapDelete("/api/files", ([FromBody] PathRequest request) =>
 {
     try
     {
@@ -280,6 +326,16 @@ app.MapDelete("/api/files", (PathRequest request) =>
 app.MapGet("/api/logs", (int? take) => Results.Ok(new { logs = db.GetLogs(Math.Clamp(take ?? 100, 1, 500)) }));
 
 app.MapGet("/api/automation/watches", () => Results.Ok(new { watches = db.GetWatches() }));
+app.MapPost("/api/automation/watches/sync", async () =>
+{
+    try
+    {
+        foreach (var watch in db.GetWatches()) FileIndexer.Index(watch.Path, db, true);
+        await SmbPublisher.PublishAsync(db);
+        return Results.Ok(new { ok = true });
+    }
+    catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
 app.MapPost("/api/automation/watches", (WatchRequest request, WatchService watcher) =>
 {
     try
@@ -288,9 +344,8 @@ app.MapPost("/api/automation/watches", (WatchRequest request, WatchService watch
         if (!Directory.Exists(full)) return Results.BadRequest(new { error = "监控路径必须是已存在的文件夹。" });
         var watch = db.AddWatch(full);
         watcher.Add(full);
-        var indexed = FileIndexer.Index(full, db, true);
-        db.Log("watch-add", full, $"Folder watch enabled; initial scan indexed {indexed} item(s)");
-        return Results.Ok(new { ok = true, watch, indexed });
+        db.Log("watch-add", full, "Folder watch enabled; waiting for file changes or manual sync");
+        return Results.Ok(new { ok = true, watch });
     }
     catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
@@ -327,7 +382,7 @@ app.MapGet("/api/smb/shares", async () =>
 {
     try
     {
-        var json = await PowerShell.RunAsync("$ErrorActionPreference='Stop'; @(Get-SmbShare | Where-Object {$_.Special -eq $false} | Select-Object Name,Path,Description) | ConvertTo-Json -Depth 4 -Compress");
+        var json = await PowerShell.RunAsync("$ErrorActionPreference='Stop'; @(Get-SmbShare | Where-Object {$_.Special -eq $false -and ($_.Description -eq 'MediaHub managed share' -or $_.Name -eq 'mediahub')} | Select-Object @{n='name';e={$_.Name}},@{n='path';e={$_.Path}},@{n='description';e={$_.Description}}) | ConvertTo-Json -Depth 4 -Compress");
         using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "[]" : json);
         var shares = doc.RootElement.ValueKind == JsonValueKind.Array
             ? doc.RootElement.EnumerateArray().Select(x => x.Clone()).ToArray()
@@ -337,14 +392,16 @@ app.MapGet("/api/smb/shares", async () =>
     catch (Exception ex) { return Results.BadRequest(new { error = "读取 SMB 共享失败（请确认 Windows 文件共享功能可用）：" + ex.Message }); }
 });
 
+var shareMutation = new SemaphoreSlim(1);
 app.MapPost("/api/smb/shares", async (SmbCreateRequest request) =>
 {
+    await shareMutation.WaitAsync();
     try
     {
         if (!AdminCheck.IsAdministrator())
             return Results.Conflict(new { error = "创建 SMB 共享需要管理员权限。请关闭 MediaHub，右键 EXE 选择“以管理员身份运行”后再操作。" });
-        var name = request.Name.Trim();
-        var account = request.Account.Trim();
+        var name = string.IsNullOrWhiteSpace(request.Name) ? "mediahub" : request.Name.Trim();
+        var account = WindowsIdentity.GetCurrent().Name;
         var full = PathGuard.EnsureAllowed(request.Path);
         PathGuard.EnsureNotDriveRoot(full);
         if (!Directory.Exists(full)) return Results.BadRequest(new { error = "共享路径必须是已存在的文件夹。" });
@@ -355,15 +412,21 @@ app.MapPost("/api/smb/shares", async (SmbCreateRequest request) =>
         var access = request.Access.Equals("Read", StringComparison.OrdinalIgnoreCase) ? "ReadAccess" : "ChangeAccess";
         var script = "$ErrorActionPreference='Stop'; " +
                      $"$n={PowerShell.Quote(name)}; $p={PowerShell.Quote(full)}; $a={PowerShell.Quote(account)}; " +
+                     "if(Get-SmbShare | Where-Object {$_.Description -eq 'MediaHub managed share' -or $_.Name -eq 'mediahub'}){throw '只能创建一个 MediaHub 共享，请先撤销已有共享。'}; " +
                      $"$old=Get-SmbShare -Name $n -ErrorAction SilentlyContinue; if($old){{throw '共享名称已存在，请先在界面删除旧共享。'}}; " +
-                     $"New-SmbShare -Name $n -Path $p -{access} $a -ErrorAction Stop | Out-Null; " +
+                     $"New-SmbShare -Name $n -Path $p -Description 'MediaHub managed share' -{access} $a -ErrorAction Stop | Out-Null; " +
                      "'SMB_SHARE_CREATED'";
         await PowerShell.RunAsync(script);
+        foreach (var category in new[] { "电影", "电视剧", "动漫", "照片", "视频", "音乐", "文档", "其他" })
+            Directory.CreateDirectory(PathGuard.EnsureAllowed(Path.Combine(full, category)));
+        SmbPublisher.Register(full);
+        await SmbPublisher.PublishAsync(db);
         db.Log("smb-create", full, $"Share={name}; Account={account}; Access={request.Access}");
         return Results.Ok(new { ok = true, name, path = full, unc = $@"\\{Environment.MachineName}\{name}", account, access = request.Access,
             note = "共享权限已设置；实际访问还受该目录现有 NTFS 权限约束。" });
     }
     catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+    finally { shareMutation.Release(); }
 });
 
 app.MapDelete("/api/smb/shares/{name}", async (string name) =>
@@ -392,7 +455,9 @@ if (!args.Contains("--background", StringComparer.OrdinalIgnoreCase))
 {
     try { Process.Start(new ProcessStartInfo($"http://127.0.0.1:{port}/") { UseShellExecute = true }); } catch { }
 }
-await app.RunAsync();
+await app.StartAsync();
+using var tray = new TrayHost(app.Lifetime, $"http://127.0.0.1:{port}/");
+await app.WaitForShutdownAsync();
 
 static string GetLanAddress()
 {
@@ -408,6 +473,10 @@ static string GetLanAddress()
 
 record IndexRequest(string Path, bool Recursive = true);
 record PathRequest(string Path);
+record BatchIndexDeleteRequest(long[] Ids);
+record ChangeCategoryRequest(long[] Ids, string Category);
+record DisplayNameRequest(long Id, string Name);
+record DescriptionRequest(long Id, string Description);
 record RenameRequest(string Path, string NewName);
 record CreateFolderRequest(string Parent, string Name);
 record MoveRequest(string Path, string DestinationDirectory);
@@ -619,6 +688,9 @@ sealed class MediaDb
             Size INTEGER NOT NULL DEFAULT 0, ModifiedUtc TEXT NOT NULL, IndexedUtc TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS IX_Items_Category ON Items(Category);
         CREATE INDEX IF NOT EXISTS IX_Items_Name ON Items(Name);
+        CREATE TABLE IF NOT EXISTS CategoryOverrides(Path TEXT PRIMARY KEY COLLATE NOCASE, Category TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS DisplayNames(Path TEXT PRIMARY KEY COLLATE NOCASE, Name TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS Descriptions(Path TEXT PRIMARY KEY COLLATE NOCASE, Description TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS Watches(Id INTEGER PRIMARY KEY AUTOINCREMENT, Path TEXT NOT NULL UNIQUE COLLATE NOCASE, CreatedUtc TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS Logs(Id INTEGER PRIMARY KEY AUTOINCREMENT, Action TEXT NOT NULL, Path TEXT NOT NULL, Detail TEXT NOT NULL, CreatedUtc TEXT NOT NULL);
         """;
@@ -635,12 +707,20 @@ sealed class MediaDb
         cmd.CommandText = """
         INSERT INTO Items(Path,Name,Category,IsDirectory,Size,ModifiedUtc,IndexedUtc)
         VALUES($p,$n,$cat,$d,$s,$m,$i)
-        ON CONFLICT(Path) DO UPDATE SET Name=$n,Category=$cat,IsDirectory=$d,Size=$s,ModifiedUtc=$m,IndexedUtc=$i;
+        ON CONFLICT(Path) DO UPDATE SET Name=$n,Category=$cat,IsDirectory=$d,Size=$s,ModifiedUtc=$m,IndexedUtc=$i
+        WHERE Items.Size<>$s OR Items.ModifiedUtc<>$m OR Items.IsDirectory<>$d OR Items.Category<>$cat;
         """;
-        cmd.Parameters.AddWithValue("$p", path); cmd.Parameters.AddWithValue("$n", info.Name);
-        cmd.Parameters.AddWithValue("$cat", FileIndexer.CategoryFor(path)); cmd.Parameters.AddWithValue("$d", isDir ? 1 : 0);
+        using var nameCommand = c.CreateCommand();
+        nameCommand.CommandText = "SELECT Name FROM DisplayNames WHERE Path=$p";
+        nameCommand.Parameters.AddWithValue("$p", path);
+        cmd.Parameters.AddWithValue("$p", path); cmd.Parameters.AddWithValue("$n", nameCommand.ExecuteScalar() as string ?? info.Name);
+        using var categoryCommand = c.CreateCommand();
+        categoryCommand.CommandText = "SELECT Category FROM CategoryOverrides WHERE Path=$p";
+        categoryCommand.Parameters.AddWithValue("$p", path);
+        cmd.Parameters.AddWithValue("$cat", categoryCommand.ExecuteScalar() as string ?? FileIndexer.CategoryFor(path)); cmd.Parameters.AddWithValue("$d", isDir ? 1 : 0);
         cmd.Parameters.AddWithValue("$s", size); cmd.Parameters.AddWithValue("$m", info.LastWriteTimeUtc.ToString("O"));
-        cmd.Parameters.AddWithValue("$i", DateTime.UtcNow.ToString("O")); cmd.ExecuteNonQuery();
+        cmd.Parameters.AddWithValue("$i", DateTime.UtcNow.ToString("O"));
+        if (cmd.ExecuteNonQuery() > 0) SmbPublisher.RequestPublish();
     }
     public List<object> SearchItems(string search, string category)
     {
@@ -653,7 +733,7 @@ sealed class MediaDb
             var path = r.GetString(1);
             list.Add(new { id = r.GetInt64(0), path, name = r.GetString(2), category = r.GetString(3),
                 isDirectory = r.GetInt32(4) == 1, size = r.GetInt64(5), modifiedUtc = r.GetString(6),
-                indexedUtc = r.GetString(7), exists = File.Exists(path) || Directory.Exists(path) });
+                indexedUtc = r.GetString(7), displayName = GetDisplayName(path), description = GetDescription(path), exists = File.Exists(path) || Directory.Exists(path) });
         }
         return list;
     }
@@ -668,6 +748,119 @@ sealed class MediaDb
         cmd.CommandText = "DELETE FROM Items WHERE Path=$p OR substr(Path,1,length($prefix))=$prefix;";
         cmd.Parameters.AddWithValue("$p", Path.GetFullPath(path)); cmd.Parameters.AddWithValue("$prefix", prefix);
         return cmd.ExecuteNonQuery();
+    }
+    string GetDisplayName(string path)
+    {
+        using var c = Open(); using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT Name FROM DisplayNames WHERE Path=$p"; cmd.Parameters.AddWithValue("$p", path);
+        return cmd.ExecuteScalar() as string ?? "";
+    }
+    string GetDescription(string path)
+    {
+        using var c = Open(); using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT Description FROM Descriptions WHERE Path=$p"; cmd.Parameters.AddWithValue("$p", path);
+        return cmd.ExecuteScalar() as string ?? "";
+    }
+    public bool SetDescription(long id, string description)
+    {
+        using var c = Open(); using var cmd = c.CreateCommand();
+        cmd.CommandText = "INSERT INTO Descriptions(Path,Description) SELECT Path,$d FROM Items WHERE Id=$id ON CONFLICT(Path) DO UPDATE SET Description=$d";
+        cmd.Parameters.AddWithValue("$id", id); cmd.Parameters.AddWithValue("$d", description);
+        return cmd.ExecuteNonQuery() > 0;
+    }
+    public string? RenameIndexedFile(long id, string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name is "." or ".." || name.EndsWith('.') || name.EndsWith(' ')) throw new IOException("请输入有效文件名（包含扩展名）。");
+        using var c = Open(); using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT Path FROM Items WHERE Id=$id"; cmd.Parameters.AddWithValue("$id", id);
+        if (cmd.ExecuteScalar() is not string oldPath) return null;
+        oldPath = PathGuard.EnsureAllowed(oldPath); PathGuard.EnsureNotDriveRoot(oldPath);
+        if (Directory.Exists(oldPath)) throw new IOException("当前仅支持文件改名，文件夹暂不支持。");
+        var destination = Path.Combine(Path.GetDirectoryName(oldPath)!, name);
+        if (oldPath == destination) return oldPath;
+        if (File.Exists(destination) || Directory.Exists(destination)) throw new IOException("目标名称已存在。");
+        File.Move(oldPath, destination);
+        try
+        {
+            using var transaction = c.BeginTransaction(); cmd.Transaction = transaction;
+            cmd.Parameters.AddWithValue("$p", oldPath); cmd.Parameters.AddWithValue("$new", destination); cmd.Parameters.AddWithValue("$n", name);
+            cmd.CommandText = "UPDATE Items SET Path=$new,Name=COALESCE((SELECT Name FROM DisplayNames WHERE Path=$p),$n) WHERE Id=$id"; cmd.ExecuteNonQuery();
+            foreach (var table in new[] { "CategoryOverrides", "Descriptions", "DisplayNames" }) { cmd.CommandText = $"UPDATE {table} SET Path=$new WHERE Path=$p"; cmd.ExecuteNonQuery(); }
+            transaction.Commit();
+        }
+        catch { File.Move(destination, oldPath); throw; }
+        return oldPath;
+    }
+    public bool SetDisplayName(long id, string name)
+    {
+        using var c = Open();
+        using var transaction = c.BeginTransaction();
+        using var cmd = c.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = "SELECT Path FROM Items WHERE Id=$id";
+        cmd.Parameters.AddWithValue("$id", id);
+        if (cmd.ExecuteScalar() is not string path) return false;
+        cmd.Parameters.AddWithValue("$p", path);
+        cmd.Parameters.AddWithValue("$n", name.Length == 0 ? Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar)) : name);
+        cmd.CommandText = name.Length == 0 ? "DELETE FROM DisplayNames WHERE Path=$p" :
+            "INSERT INTO DisplayNames(Path,Name) VALUES($p,$n) ON CONFLICT(Path) DO UPDATE SET Name=$n";
+        cmd.ExecuteNonQuery();
+        cmd.CommandText = "UPDATE Items SET Name=$n WHERE Id=$id";
+        cmd.ExecuteNonQuery();
+        transaction.Commit();
+        return true;
+    }
+    public int ChangeCategory(IEnumerable<long> ids, string category)
+    {
+        using var c = Open();
+        using var transaction = c.BeginTransaction();
+        var changed = 0;
+        foreach (var id in ids)
+        {
+            using var cmd = c.CreateCommand();
+            cmd.Transaction = transaction;
+            cmd.CommandText = "INSERT INTO CategoryOverrides(Path,Category) SELECT Path,$cat FROM Items WHERE Id=$id ON CONFLICT(Path) DO UPDATE SET Category=$cat;";
+            cmd.Parameters.AddWithValue("$cat", category); cmd.Parameters.AddWithValue("$id", id);
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "UPDATE Items SET Category=$cat WHERE Id=$id;";
+            changed += cmd.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        SmbPublisher.RequestPublish();
+        return changed;
+    }
+    public int RemoveIndexIds(IEnumerable<long> ids)
+    {
+        using var c = Open();
+        using var transaction = c.BeginTransaction();
+        var removed = 0;
+        foreach (var id in ids)
+        {
+            using var cmd = c.CreateCommand();
+            cmd.Transaction = transaction;
+            cmd.CommandText = "DELETE FROM Items WHERE Id=$id;";
+            cmd.Parameters.AddWithValue("$id", id);
+            removed += cmd.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        return removed;
+    }
+    public List<string> GetIndexPathsForRemoval(long[]? ids, string? path)
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT Id,Path FROM Items";
+        using var reader = cmd.ExecuteReader();
+        var selectedIds = ids?.ToHashSet();
+        var prefix = path?.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var paths = new List<string>();
+        while (reader.Read())
+        {
+            var candidate = reader.GetString(1);
+            if (selectedIds is not null ? selectedIds.Contains(reader.GetInt64(0)) :
+                candidate == path || candidate.StartsWith(prefix!, StringComparison.Ordinal)) paths.Add(candidate);
+        }
+        return paths;
     }
     public object AddWatch(string path)
     {
@@ -707,7 +900,16 @@ sealed class WatchService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         foreach (var w in _db.GetWatches()) Add(w.Path);
-        try { await Task.Delay(Timeout.Infinite, stoppingToken); }
+        try
+        {
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3), stoppingToken);
+                if (!SmbPublisher.TakePending()) continue;
+                try { await SmbPublisher.PublishAsync(_db); }
+                catch (Exception ex) { _db.Log("publish-error", "", ex.Message); }
+            }
+        }
         catch (OperationCanceledException) { }
     }
     public void Add(string path)
