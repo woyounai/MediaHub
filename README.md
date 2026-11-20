@@ -14,9 +14,11 @@ MediaHub 是 Windows 局域网文件管理工具。WinFsp 将索引中的原文�
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-and-run.ps1
    ```
 
-   接受管理员提示。脚本关闭旧 MediaHub，编译到 `artifacts/verified` 并启动。构建时需能找到已安装的 `WinFsp/bin/winfsp-msil.dll`。
+   接受管理员提示。脚本关闭旧 MediaHub，编译到 `artifacts/verified` 并启动。源码编译时请安装 WinFsp 的 Developer 文件，确保存在 `WinFsp/bin/winfsp-msil.dll`；自定义位置可传入 `-p:WinFspAssemblyPath=完整DLL路径`。GitHub Actions 会自动安装此依赖。
 4. 打开 `http://127.0.0.1:8765/`，输入 `%LOCALAPPDATA%\MediaHub\api.key` 中的 API Key。不要向他人发送此密钥。
 5. 右上角可切换中文 / English，浏览器会记住选择。手机端隐藏 SMB 和开机启动入口。
+
+“开机启动”会创建当前服务账户登录时以最高权限运行的计划任务，后台启动并保留托盘图标。旧版设置过的用户需在更新后重新点击一次；应用路径变化后也需重新设置。此功能在用户登录后启动，不是在登录前作为系统服务运行。
 
 ## 索引和管理
 

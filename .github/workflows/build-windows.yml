@@ -23,6 +23,17 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Install WinFsp SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:RUNNER_TEMP 'winfsp-2.1.25156.msi'
+          Invoke-WebRequest 'https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi' -OutFile $installer
+          $install = Start-Process msiexec.exe -ArgumentList @('/i', ('"' + $installer + '"'), '/qn', '/norestart', 'INSTALLLEVEL=1000') -Wait -PassThru
+          if ($install.ExitCode -notin @(0, 3010)) { throw "WinFsp installation failed: $($install.ExitCode)" }
+          $assembly = Join-Path ${env:ProgramFiles(x86)} 'WinFsp/bin/winfsp-msil.dll'
+          if (-not (Test-Path -LiteralPath $assembly)) { throw "WinFsp .NET assembly missing: $assembly" }
+
       - name: Restore
         run: dotnet restore src/MediaHub/MediaHub.csproj
 

@@ -380,20 +380,12 @@ app.MapDelete("/api/automation/watches/{id:int}", (int id, WatchService watcher)
     return Results.Ok(new { ok = true });
 });
 
-app.MapPost("/api/automation/startup", (StartupRequest request) =>
+app.MapPost("/api/automation/startup", async (StartupRequest request) =>
 {
     try
     {
-        using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-        if (request.Enabled)
-        {
-            var exe = Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule!.FileName!;
-            var launch = $"Start-Process -FilePath {PowerShell.Quote(exe)} -ArgumentList '--background' -WindowStyle Hidden";
-            var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(launch));
-            key.SetValue("MediaHub", $"powershell.exe -NoProfile -WindowStyle Hidden -EncodedCommand {encoded}");
-        }
-        else key.DeleteValue("MediaHub", false);
-        db.Log("startup", "HKCU Run", request.Enabled ? "Enabled" : "Disabled");
+        await StartupService.SetEnabled(request.Enabled);
+        db.Log("startup", "Task Scheduler", request.Enabled ? "Enabled" : "Disabled");
         return Results.Ok(new { ok = true, enabled = request.Enabled });
     }
     catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }

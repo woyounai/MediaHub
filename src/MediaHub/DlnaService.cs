@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.NetworkInformation;
 using System.Text;
 using System.Xml.Linq;
 using Microsoft.AspNetCore.StaticFiles;
@@ -13,6 +14,8 @@ static class DlnaService
     public record LocalPlayRequest(string Path);
     static readonly ConcurrentDictionary<string, Device> Devices = new();
     static readonly ConcurrentDictionary<string, Ticket> Tickets = new();
+    static readonly object DiscoveryLock = new();
+    static Task? DiscoveryTask;
     static readonly HttpClient Http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(6) };
     public static void Map(WebApplication app, int port)
     {
@@ -37,8 +40,9 @@ static class DlnaService
             var url = $"{request.Scheme}://{request.Host}/dlna/media/{token}";
             return Results.File(Encoding.UTF8.GetBytes("#EXTM3U\n" + url + "\n"), "audio/x-mpegurl", "MediaHub.m3u");
         });
-        app.MapGet("/api/dlna/devices", async () =>
+        app.MapGet("/api/dlna/devices", async (HttpResponse response) =>
         {
+            response.Headers.CacheControl = "no-store";
             try { await Discover(); return Results.Ok(new { devices = Devices.Values.Select(d => new { id = d.Id, name = d.Name }).ToArray() }); }
             catch (Exception ex) { return Results.BadRequest(new { error = "扫描失败：" + ex.Message }); }
         });
@@ -76,24 +80,26 @@ static class DlnaService
             return Results.File(path, mime ?? "application/octet-stream", enableRangeProcessing: true);
         });
     }
-    static async Task Discover()
+    static Task Discover()
     {
-        var locations = new HashSet<Uri>();
-        using var udp = new UdpClient(AddressFamily.InterNetwork);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        var message = Encoding.ASCII.GetBytes("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n");
-        await udp.SendAsync(message, new IPEndPoint(IPAddress.Parse("239.255.255.250"), 1900));
-        try
+        lock (DiscoveryLock)
         {
-            while (true)
-            {
-                var packet = await udp.ReceiveAsync(timeout.Token);
-                var location = Encoding.UTF8.GetString(packet.Buffer).Split("\r\n").FirstOrDefault(l => l.StartsWith("LOCATION:", StringComparison.OrdinalIgnoreCase))?[9..].Trim();
-                if (Uri.TryCreate(location, UriKind.Absolute, out var uri) && uri.Scheme == "http" && IPAddress.TryParse(uri.Host, out var host) && host.Equals(packet.RemoteEndPoint.Address)) locations.Add(uri);
-            }
+            if (DiscoveryTask is null || DiscoveryTask.IsCompleted) DiscoveryTask = DiscoverCore();
+            return DiscoveryTask;
         }
-        catch (OperationCanceledException) { }
-        var found = await Task.WhenAll(locations.Select(async location =>
+    }
+    static async Task DiscoverCore()
+    {
+        var locations = new ConcurrentDictionary<Uri, byte>();
+        var addresses = NetworkInterface.GetAllNetworkInterfaces()
+            .Where(n => n.OperationalStatus == OperationalStatus.Up && n.SupportsMulticast && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+            .SelectMany(n => n.GetIPProperties().UnicastAddresses)
+            .Select(a => a.Address).Where(a => a.AddressFamily == AddressFamily.InterNetwork)
+            .Distinct().ToArray();
+        if (addresses.Length == 0) throw new IOException("没有可用于局域网发现的 IPv4 网卡。");
+        var scans = await Task.WhenAll(addresses.Select(address => ScanInterface(address, locations)));
+        if (!scans.Any(success => success)) throw new IOException("所有网卡的发现请求均发送失败，请检查网络和防火墙。");
+        var found = await Task.WhenAll(locations.Keys.Select(async location =>
         {
             try
             {
@@ -109,6 +115,51 @@ static class DlnaService
         }));
         Devices.Clear();
         foreach (var device in found) if (device is not null) Devices[device.Id] = device;
+    }
+    static async Task<bool> ScanInterface(IPAddress address, ConcurrentDictionary<Uri, byte> locations)
+    {
+        try
+        {
+            using var udp = new UdpClient(new IPEndPoint(address, 0));
+            udp.Client.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastInterface, address.GetAddressBytes());
+            udp.Ttl = 2;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+            var receive = ReceiveLocations();
+            try
+            {
+                // Repeat probes: receivers may miss the first packet while waking up.
+                for (var attempt = 0; attempt < 3; attempt++)
+                {
+                    foreach (var target in new[] { "urn:schemas-upnp-org:device:MediaRenderer:1", "urn:schemas-upnp-org:service:AVTransport:1" })
+                    {
+                        var message = Encoding.ASCII.GetBytes($"M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: {target}\r\n\r\n");
+                        await udp.SendAsync(message, new IPEndPoint(IPAddress.Parse("239.255.255.250"), 1900));
+                    }
+                    if (attempt < 2) await Task.Delay(1000, timeout.Token);
+                }
+                await receive;
+                return true;
+            }
+            finally
+            {
+                await timeout.CancelAsync();
+                await receive;
+            }
+            async Task ReceiveLocations()
+            {
+                try
+                {
+                    while (true)
+                    {
+                        var packet = await udp.ReceiveAsync(timeout.Token);
+                        var location = Encoding.UTF8.GetString(packet.Buffer).Split("\r\n").FirstOrDefault(l => l.StartsWith("LOCATION:", StringComparison.OrdinalIgnoreCase))?[9..].Trim();
+                        if (Uri.TryCreate(location, UriKind.Absolute, out var uri) && uri.Scheme == "http" && IPAddress.TryParse(uri.Host, out var host) && host.Equals(packet.RemoteEndPoint.Address)) locations.TryAdd(uri, 0);
+                    }
+                }
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
+            }
+        }
+        catch (SocketException) { return false; }
     }
     static async Task Soap(Device device, string action, params XElement[] arguments)
     {
