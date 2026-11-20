@@ -9,7 +9,7 @@ sealed class TrayHost : IDisposable
     private ApplicationContext? context;
     private Control? dispatcher;
 
-    public TrayHost(IHostApplicationLifetime lifetime, string url)
+    public TrayHost(IHostApplicationLifetime lifetime, Func<string> url)
     {
         thread = new Thread(() =>
         {
@@ -17,14 +17,15 @@ sealed class TrayHost : IDisposable
             control.CreateControl();
             dispatcher = control;
             using var menu = new ContextMenuStrip();
-            void Open() => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            using var applicationIcon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? (Icon)SystemIcons.Application.Clone();
+            void Open() => Process.Start(new ProcessStartInfo(url()) { UseShellExecute = true });
             menu.Items.Add("打开 MediaHub", null, (_, _) => Open());
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出 MediaHub", null, (_, _) => lifetime.StopApplication());
             using var icon = new NotifyIcon
             {
                 Text = "MediaHub — 右键退出",
-                Icon = SystemIcons.Application,
+                Icon = applicationIcon,
                 ContextMenuStrip = menu,
                 Visible = true
             };

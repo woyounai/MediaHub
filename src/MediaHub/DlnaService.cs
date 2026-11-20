@@ -10,12 +10,34 @@ static class DlnaService
     record Device(string Id, string Name, Uri Control, string Service);
     record Ticket(string Path, DateTime Expires);
     public record PlayRequest(string DeviceId, string Path);
+    public record LocalPlayRequest(string Path);
     static readonly ConcurrentDictionary<string, Device> Devices = new();
     static readonly ConcurrentDictionary<string, Ticket> Tickets = new();
     static readonly HttpClient Http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(6) };
     static readonly FileExtensionContentTypeProvider Types = new();
     public static void Map(WebApplication app, int port)
     {
+        app.MapPost("/api/player/prepare", (LocalPlayRequest media, HttpRequest request) =>
+        {
+            try
+            {
+                var path = PathGuard.EnsureAllowed(media.Path);
+                if (!File.Exists(path)) return Results.NotFound(new { error = "文件不存在。" });
+                if (!Types.TryGetContentType(path, out var mime) || !(mime.StartsWith("audio/") || mime.StartsWith("video/"))) return Results.BadRequest(new { error = "请选择音频或视频文件。" });
+                foreach (var old in Tickets) if (old.Value.Expires < DateTime.UtcNow) Tickets.TryRemove(old.Key, out _);
+                var token = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+                Tickets[token] = new(path, DateTime.UtcNow.AddHours(12));
+                var origin = $"{request.Scheme}://{request.Host}";
+                return Results.Ok(new { url = $"{origin}/dlna/media/{token}", playlist = $"{origin}/player/playlist/{token}", mime });
+            }
+            catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+        app.MapGet("/player/playlist/{token}", (string token, HttpRequest request) =>
+        {
+            if (!Tickets.TryGetValue(token, out var ticket) || ticket.Expires < DateTime.UtcNow) return Results.NotFound();
+            var url = $"{request.Scheme}://{request.Host}/dlna/media/{token}";
+            return Results.File(Encoding.UTF8.GetBytes("#EXTM3U\n" + url + "\n"), "audio/x-mpegurl", "MediaHub.m3u");
+        });
         app.MapGet("/api/dlna/devices", async () =>
         {
             try { await Discover(); return Results.Ok(new { devices = Devices.Values.Select(d => new { id = d.Id, name = d.Name }).ToArray() }); }

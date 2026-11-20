@@ -25,6 +25,8 @@ builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 20L * 1024 *
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 20L * 1024 * 1024 * 1024);
 builder.Services.AddSingleton<AppPaths>();
 builder.Services.AddSingleton<MediaDb>();
+builder.Services.AddSingleton<VirtualFileSystem>();
+builder.Services.AddHostedService<VirtualFileSystemService>();
 builder.Services.AddSingleton<WatchService>();
 builder.Services.AddHostedService<WatchService>(sp => sp.GetRequiredService<WatchService>());
 
@@ -34,8 +36,10 @@ var db = app.Services.GetRequiredService<MediaDb>();
 db.Initialize();
 
 var apiKey = paths.GetOrCreateApiKey();
+var apiKeyLock = new object();
 var port = int.TryParse(Environment.GetEnvironmentVariable("MEDIAHUB_PORT"), out var p) ? p : 8765;
 DlnaService.Map(app, port);
+SharePermissions.Map(app);
 app.Urls.Clear();
 app.Urls.Add($"http://0.0.0.0:{port}");
 
@@ -48,7 +52,7 @@ app.Use(async (ctx, next) =>
     {
         var supplied = ctx.Request.Headers["X-MediaHub-Key"].ToString();
         var a = Encoding.UTF8.GetBytes(supplied);
-        var b = Encoding.UTF8.GetBytes(apiKey);
+        var b = Encoding.UTF8.GetBytes(Volatile.Read(ref apiKey));
         if (a.Length != b.Length || !CryptographicOperations.FixedTimeEquals(a, b))
         {
             ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -61,6 +65,19 @@ app.Use(async (ctx, next) =>
 
 app.MapGet("/api/health", () => Results.Ok(new { ok = true, app = "MediaHub", version = "0.1.0" }));
 
+app.MapGet("/api/vfs/status", (VirtualFileSystem fs) => Results.Ok(new { mounted = fs.IsMounted, path = fs.MountPath, error = fs.Error, mode = "read-only" }));
+app.MapPost("/api/security/api-key", (ApiKeyChangeRequest request) =>
+{
+    var next = string.IsNullOrWhiteSpace(request.NewKey) ? RandomNumberGenerator.GetInt32(1000000).ToString("D6") : request.NewKey.Trim();
+    lock (apiKeyLock)
+    {
+        var file = Path.Combine(paths.DataDirectory, "api.key");
+        File.WriteAllText(file + ".tmp", next, new UTF8Encoding(false));
+        File.Move(file + ".tmp", file, true);
+        Interlocked.Exchange(ref apiKey, next);
+    }
+    return Results.Ok(new { ok = true, apiKey = next });
+});
 app.MapGet("/api/config", () => Results.Ok(new
 {
     app = "MediaHub NAS",
@@ -68,6 +85,8 @@ app.MapGet("/api/config", () => Results.Ok(new
     port,
     computerName = Environment.MachineName,
     currentAccount = WindowsIdentity.GetCurrent().Name,
+    sqliteVersion = SQLitePCL.raw.sqlite3_libversion().utf8_to_string(),
+    vfsMount = app.Services.GetRequiredService<VirtualFileSystem>().SharePath,
     dataDirectory = paths.DataDirectory,
     inbox = paths.InboxDirectory,
     isAdministrator = WindowsIdentity.GetCurrent().Owner is not null &&
@@ -156,7 +175,9 @@ app.MapPost("/api/index/display-name", (DisplayNameRequest request) =>
 {
     if (request.Id <= 0 || request.Name is null || request.Name.Trim().Length > 255 || request.Name.Any(char.IsControl))
         return Results.BadRequest(new { error = "显示名称最多 255 字，留空恢复真实文件名。" });
-    return db.SetDisplayName(request.Id, request.Name.Trim()) ? Results.Ok(new { ok = true }) : Results.NotFound();
+    if (!db.SetDisplayName(request.Id, request.Name.Trim())) return Results.NotFound();
+    VirtualFileSystem.Current?.Refresh(db);
+    return Results.Ok(new { ok = true });
 });
 app.MapPost("/api/index/file-name", async (DisplayNameRequest request) =>
 {
@@ -402,14 +423,16 @@ app.MapPost("/api/smb/shares", async (SmbCreateRequest request) =>
             return Results.Conflict(new { error = "创建 SMB 共享需要管理员权限。请关闭 MediaHub，右键 EXE 选择“以管理员身份运行”后再操作。" });
         var name = string.IsNullOrWhiteSpace(request.Name) ? "mediahub" : request.Name.Trim();
         var account = WindowsIdentity.GetCurrent().Name;
-        var full = PathGuard.EnsureAllowed(request.Path);
-        PathGuard.EnsureNotDriveRoot(full);
+        var fs = app.Services.GetRequiredService<VirtualFileSystem>();
+        if (!fs.IsMounted) return Results.Conflict(new { error = "WinFsp 尚未成功挂载，请检查 /api/vfs/status。" });
+        var full = fs.SharePath;
+
         if (!Directory.Exists(full)) return Results.BadRequest(new { error = "共享路径必须是已存在的文件夹。" });
         if (!System.Text.RegularExpressions.Regex.IsMatch(name, @"^[A-Za-z0-9_-]{1,80}$"))
             return Results.BadRequest(new { error = "共享名称仅支持英文、数字、下划线和短横线。" });
         if (string.IsNullOrWhiteSpace(account) || account.Contains('\n') || account.Contains('\r'))
             return Results.BadRequest(new { error = "请填写已存在的 Windows 用户，例如 COMPUTER\\media。" });
-        var access = request.Access.Equals("Read", StringComparison.OrdinalIgnoreCase) ? "ReadAccess" : "ChangeAccess";
+        var access = "ReadAccess";
         var script = "$ErrorActionPreference='Stop'; " +
                      $"$n={PowerShell.Quote(name)}; $p={PowerShell.Quote(full)}; $a={PowerShell.Quote(account)}; " +
                      "if(Get-SmbShare | Where-Object {$_.Description -eq 'MediaHub managed share' -or $_.Name -eq 'mediahub'}){throw '只能创建一个 MediaHub 共享，请先撤销已有共享。'}; " +
@@ -417,8 +440,7 @@ app.MapPost("/api/smb/shares", async (SmbCreateRequest request) =>
                      $"New-SmbShare -Name $n -Path $p -Description 'MediaHub managed share' -{access} $a -ErrorAction Stop | Out-Null; " +
                      "'SMB_SHARE_CREATED'";
         await PowerShell.RunAsync(script);
-        foreach (var category in new[] { "电影", "电视剧", "动漫", "照片", "视频", "音乐", "文档", "其他" })
-            Directory.CreateDirectory(PathGuard.EnsureAllowed(Path.Combine(full, category)));
+        await SharePermissions.ApplySmb(SharePermissions.Load());
         SmbPublisher.Register(full);
         await SmbPublisher.PublishAsync(db);
         db.Log("smb-create", full, $"Share={name}; Account={account}; Access={request.Access}");
@@ -451,12 +473,18 @@ Console.WriteLine($" 数据库: {paths.DatabasePath}");
 Console.WriteLine(" 仅在可信家庭局域网使用；不要将端口转发到公网。");
 Console.WriteLine(" 按 Ctrl+C 停止服务。");
 Console.WriteLine("==================================================");
-if (!args.Contains("--background", StringComparer.OrdinalIgnoreCase))
-{
-    try { Process.Start(new ProcessStartInfo($"http://127.0.0.1:{port}/") { UseShellExecute = true }); } catch { }
-}
 await app.StartAsync();
-using var tray = new TrayHost(app.Lifetime, $"http://127.0.0.1:{port}/");
+var firstPageMarker = Path.Combine(paths.DataDirectory, "first-page-opened");
+if (!File.Exists(firstPageMarker) || !args.Contains("--background", StringComparer.OrdinalIgnoreCase))
+{
+    try
+    {
+        Process.Start(new ProcessStartInfo($"http://127.0.0.1:{port}/#apiKey={Uri.EscapeDataString(Volatile.Read(ref apiKey))}") { UseShellExecute = true });
+        File.WriteAllText(firstPageMarker, "opened");
+    }
+    catch { }
+}
+using var tray = new TrayHost(app.Lifetime, () => $"http://127.0.0.1:{port}/#apiKey={Uri.EscapeDataString(Volatile.Read(ref apiKey))}");
 await app.WaitForShutdownAsync();
 
 static string GetLanAddress()
@@ -482,6 +510,7 @@ record CreateFolderRequest(string Parent, string Name);
 record MoveRequest(string Path, string DestinationDirectory);
 record WatchRequest(string Path);
 record StartupRequest(bool Enabled);
+record ApiKeyChangeRequest(string? NewKey);
 record SmbCreateRequest(string Name, string Path, string Account, string Access = "Change");
 
 sealed class AppPaths
@@ -494,7 +523,7 @@ sealed class AppPaths
     {
         var file = Path.Combine(DataDirectory, "api.key");
         if (File.Exists(file)) return File.ReadAllText(file).Trim();
-        var key = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        var key = RandomNumberGenerator.GetInt32(1000000).ToString("D6");
         File.WriteAllText(file, key, Encoding.ASCII);
         return key;
     }
@@ -722,10 +751,10 @@ sealed class MediaDb
         cmd.Parameters.AddWithValue("$i", DateTime.UtcNow.ToString("O"));
         if (cmd.ExecuteNonQuery() > 0) SmbPublisher.RequestPublish();
     }
-    public List<object> SearchItems(string search, string category)
+    public List<object> SearchItems(string search, string category, bool all = false)
     {
         using var c = Open(); using var cmd = c.CreateCommand();
-        cmd.CommandText = "SELECT Id,Path,Name,Category,IsDirectory,Size,ModifiedUtc,IndexedUtc FROM Items WHERE ($q='' OR Name LIKE $like OR Path LIKE $like) AND ($cat='' OR Category=$cat) ORDER BY IsDirectory DESC, Name COLLATE NOCASE LIMIT 10000;";
+        cmd.CommandText = "SELECT Id,Path,Name,Category,IsDirectory,Size,ModifiedUtc,IndexedUtc FROM Items WHERE ($q='' OR Name LIKE $like OR Path LIKE $like) AND ($cat='' OR Category=$cat) ORDER BY IsDirectory DESC, Name COLLATE NOCASE" + (all ? ";" : " LIMIT 10000;");
         cmd.Parameters.AddWithValue("$q", search); cmd.Parameters.AddWithValue("$like", "%" + search + "%"); cmd.Parameters.AddWithValue("$cat", category);
         using var r = cmd.ExecuteReader(); var list = new List<object>();
         while (r.Read())

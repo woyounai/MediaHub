@@ -1,114 +1,77 @@
-# MediaHub NAS — Windows source + GitHub Actions
+# MediaHub
 
-> Source project for building a self-contained Windows x64 EXE. This repository is an early functional foundation, not a certified NAS product. Build and validate on a Windows 10 test machine before placing important data behind it.
+中文 | English below
 
-## What this version implements
+MediaHub 是 Windows 局域网文件管理工具。WinFsp 将索引中的原文件映射到统一的只读 SMB 共享，文件不复制、不创建硬链接或符号链接。网页提供索引、分类、名称、描述、监控和播放管理。
 
-- ASP.NET Core web server and browser UI.
-- API-key authentication for `/api/*`.
-- SQLite persistent file index.
-- Browse local fixed/removable ready drives and directories.
-- Index files/folders without moving originals.
-- Search indexed files.
-- Upload files to a selected server folder (or Documents\MediaHub Inbox).
-- Download original files.
-- Create folders; rename, move and copy original files.
-- Delete files/folders to the Windows Recycle Bin using Windows Shell APIs.
-- Remove index records separately without touching originals.
-- FileSystemWatcher folder monitoring with automatic indexing.
-- Windows startup registration (current user).
-- SMB share listing, create and remove using native Windows SMB PowerShell cmdlets; creating/removing shares requires running MediaHub elevated.
-- Activity log.
+## 安装与启动
 
-## Hybrid aggregation model
+1. 在服务器安装 [WinFsp 官方运行时](https://winfsp.dev/rel/)。手机、电视等客户端无需安装。
+2. 源码编译需安装 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。当前本机构建依赖 .NET 10 ASP.NET Core 和 Windows Desktop 运行时；安装 SDK 会包含所需运行环境。只有明确标为 self-contained 的发布包无需另装 .NET。
+3. 在项目根目录执行：
 
-MediaHub's web catalogue indexes original files in place. It does not move originals into a central directory and does not create symbolic links as the primary data model.
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-and-run.ps1
+   ```
 
-For SMB, create shares against real existing directories. Windows SMB exposes those real paths and applies the existing NTFS ACLs. A single SMB share that transparently merges arbitrary folders from different drives is **not** implemented: doing that reliably requires a filesystem virtualization layer/driver or actual data relocation. This build deliberately avoids pretending symlinks are universally traversable by Android/TV SMB clients.
+   接受管理员提示。脚本关闭旧 MediaHub，编译到 `artifacts/verified` 并启动。构建时需能找到已安装的 `WinFsp/bin/winfsp-msil.dll`。
+4. 打开 `http://127.0.0.1:8765/`，输入 `%LOCALAPPDATA%\MediaHub\api.key` 中的 API Key。不要向他人发送此密钥。
+5. 右上角可切换中文 / English，浏览器会记住选择。手机端隐藏 SMB 和开机启动入口。
 
-## Build using GitHub Actions
+## 索引和管理
 
-1. Create a new GitHub repository.
-2. Upload the contents of this source bundle to the repository root.
-3. Commit and push to `main` (or `master`).
-4. Open **Actions → Build MediaHub Windows EXE**.
-5. Wait for the workflow to complete.
-6. Download the `MediaHub-win-x64` artifact from the workflow run.
-7. Extract `MediaHub.exe` and `wwwroot` together. Do not separate the EXE from the `wwwroot` folder.
+- 浏览服务器文件，点击文件或文件夹的“索引”；文件夹支持递归。索引只记录原文件。
+- 每行“操作”菜单提供名称、显示名称、描述、分类、播放、下载和文件操作。
+- **真实文件名**会重命名原文件，保存前需确认；**显示名称**只改变目录展示，留空恢复真实文件名；描述独立保存。
+- 勾选多个条目可以批量分类或删除索引。删除索引移除虚拟入口，保留原文件；“删除原文件到回收站”会操作真实文件。
+- 文件夹监控可添加多个目录，变化后更新；“同步”可手动扫描。繁忙目录可能丢失监控事件，必要时手动同步。
 
-To create a versioned GitHub Release, push a tag such as `v0.1.0`. The workflow attaches `MediaHub-win-x64.zip` to that release.
+## SMB 共享和多用户
 
-Build target: .NET 10, win-x64, self-contained, single-file apphost. `wwwroot` is copied alongside the executable as static UI content. The executable includes the .NET runtime and SQLite native library bundle.
+1. 在网页“SMB 共享管理”创建唯一共享，默认名 `mediahub`。后端使用 WinFsp 挂载中的 `mediahub` 子目录，不能将任意真实目录作为聚合共享。
+2. 在“共享用户与权限”选择已有 Windows 用户，设置“允许读取”或“禁止访问”，点击“应用到 SMB 和 WinFsp”。两层权限同步生效；会短暂断开连接，需要重连。
+3. 客户端连接 `\\服务器IP\mediahub`，用户名使用 `服务器电脑名\本地用户名`，密码为该账户密码，不是 Windows Hello PIN。
+4. 无密码微软账户可另建专用本地账户。在管理员终端执行 `net user mediahub * /add`，按提示设置密码，再在网页授权。不要将它加入管理员组。
+5. 当前 SMB 为只读。源文件由服务进程读取，该进程必须拥有原文件访问权限。勿向不可信用户开放含私密文件的索引。
 
-## Run on Windows 10
+默认挂载根目录：`C:\ProgramData\MediaHub\Share`；共享子目录为 `mediahub`。可在启动前通过 `MEDIAHUB_VFS_MOUNT` 调整空挂载目录，通过 `MEDIAHUB_PORT` 调整网页端口。
 
-- Recommended: Windows 10 version 22H2 / build 19045, x64, fully patched.
-- Run `MediaHub.exe`.
-- It prints the local URL, LAN URL, API key, and database location; it attempts to open the browser on the server.
-- On another LAN device, open `http://SERVER-LAN-IP:8765/` and enter the API key.
-- If Windows Firewall blocks access, add an inbound TCP 8765 rule for the Private profile only.
-- Do not port-forward 8765 or SMB TCP 445 to the public internet.
+## 播放
 
-The API key is stored at `%LOCALAPPDATA%\MediaHub\api.key`. The SQLite database is `%LOCALAPPDATA%\MediaHub\mediahub.db`.
+- “播放（本地播放器）”为当前浏览设备生成 12 小时有效的 HTTP 串流地址。安卓可唤起兼容播放器，iOS 可打开 VLC；电脑可下载 M3U 后用关联播放器打开，也可复制串流地址。
+- “远程 DLNA 播放”扫描服务器所在局域网，选择接收设备后发送播放请求。电视需启用 DLNA，且能访问服务器端口。
+- HTTP 和 DLNA 直接读取原文件，支持 HTTP 分段读取，不经过 SMB。无转码，播放能力取决于客户端。
 
-## SMB setup
+## 停止、备份和排障
 
-- Create a normal local Windows account first (for example `media`) using Windows Settings / Computer Management.
-- Run MediaHub.exe with **Run as administrator** only when creating or deleting SMB shares.
-- Create a share for a real existing folder and supply account `COMPUTERNAME\media`.
-- The share permission is set to Read or Change. Existing NTFS ACLs still apply; share permission and NTFS permission combine to determine effective access.
-- This app does not automatically weaken NTFS ACLs. If the account lacks NTFS access, Windows will deny access even if the SMB share grants it.
-- Verify with a second Windows PC first, then Android/Kodi/TV client.
-- SMB1 stays disabled.
+- 双击托盘图标打开网页；右键“退出 MediaHub”停止服务并卸载 WinFsp。共享配置保留，重启程序后可重连。
+- 虚拟文件系统目前随 MediaHub 进程运行，不是独立安装的 Windows 服务。
+- 数据库和权限配置在 `%LOCALAPPDATA%\MediaHub`。退出程序后备份整个目录；原文件另行备份。
+- 安卓“拒绝访问”：核对账户和密码，在网页同时授权 SMB/WinFsp，清理旧连接后重连。
+- 无法看到共享：确认程序运行、WinFsp 挂载成功；Windows 专用网络允许“文件和打印机共享”。网页/API 需要放行所用端口，默认 TCP 8765。不要将 SMB 或管理端口转发到公网。
+- 依赖安全检查：`dotnet list src/MediaHub/MediaHub.csproj package --vulnerable --include-transitive`。
 
-## File safety
+---
 
-- File delete sends the original item to the Windows Recycle Bin. Recycle Bin behavior may vary for removable/network volumes; test on each drive type.
-- Move/rename are real operations on original files. Cross-volume move copies to the destination first and then sends the source to the Recycle Bin; if source recycling fails, both copies are retained and the API reports the condition.
-- Copy recursively skips reparse points/symlinks.
-- Folder indexing skips reparse points to avoid loops.
-- The server can access any ready local drive. Reparse points/symlinks are rejected for file operations to reduce path escape risk. Keep the API key private; anyone with it can browse and modify files through the API.
-- Run only on a trusted LAN. This early build uses HTTP, not HTTPS; do not use over untrusted Wi-Fi or the public internet.
-- Back up the SQLite database and important originals.
+## English — Installation
 
-## Current limitations / known gaps
+MediaHub manages original Windows files and projects indexed files into one read-only SMB share using WinFsp. Files are not copied or linked.
 
-- This is an initial functional foundation. It has not been compiled or tested on the user's Windows 10 machine from this environment.
-- A GitHub Actions build is required to produce the EXE.
-- SMB account creation is not automated; use an existing Windows account.
-- SMB share creation/removal requires elevated execution. Share permissions are set, but NTFS ACLs are not changed automatically.
-- Drive-root destructive operations are blocked; symbolic links/junctions are rejected by the path guard. No unified cross-volume SMB filesystem view is provided; use multiple real SMB shares or a future filesystem virtualization driver.
-- No user/role management beyond a single API key yet.
-- Watcher events can be lost during heavy bursts; perform a manual rescan after large transfers.
-- The browser drag/drop upload sends the dropped local file to the server-side selected destination; it does not expose the client's original path. The browser cannot add a client-side file as a server-side index entry without uploading it.
-- Windows Recycle Bin support must be verified on each target volume.
-- No transcoding/media metadata scraper is included.
+1. Install the official [WinFsp runtime](https://winfsp.dev/rel/) on the server only.
+2. Install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) to build. Framework-dependent builds require ASP.NET Core and Windows Desktop runtimes; the SDK supplies them. Only explicitly self-contained releases include their own .NET runtime.
+3. Run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-and-run.ps1` in the repository root. Accept elevation. This stops the previous process, publishes to `artifacts/verified`, then starts MediaHub.
+4. Open `http://127.0.0.1:8765/`. Enter the API key from `%LOCALAPPDATA%\MediaHub\api.key`.
+5. Use the top-right language button to switch Chinese / English. The setting is remembered locally.
 
-## API overview
+## English — Usage
 
-All `/api/*` endpoints except `/api/health` require header `X-MediaHub-Key`.
+- Browse and index existing server files or folders. Indexing does not move originals.
+- Use each row's Actions menu to edit the actual filename, display name, description and category, or play/download/manage the file. Editing an actual filename renames the original; editing the display name does not.
+- Select rows for batch category changes or index removal. Removing an index removes its virtual entry but keeps the original. Recycling a file affects the original.
+- Add multiple folder watches; changes update the catalogue. Use Sync for a manual scan.
+- In SMB management, create the single `mediahub` share. Select Windows accounts, choose Allow read or Deny access, then apply to both SMB and WinFsp. Clients must reconnect after permission updates.
+- Connect to `\\SERVER-IP\mediahub` with `SERVER-NAME\username` and the Windows account password, not a PIN. Passwordless Microsoft account users can create a dedicated local account with `net user mediahub * /add`, then grant it access in MediaHub.
+- Local playback provides a temporary HTTP URL, Android app launch, iOS VLC support and desktop M3U playlists. DLNA scans the server LAN and sends playback to the selected receiver. No transcoding is provided.
+- Exiting through the tray stops the server and unmounts WinFsp. Restart MediaHub to restore access. The filesystem currently shares the application lifecycle rather than running as a separate Windows service.
 
-- `GET /api/health`
-- `GET /api/config`
-- `GET /api/items?search=&category=`
-- `GET /api/browse?path=C%3A%5C`
-- `POST /api/index` JSON `{ "path": "D:\\Videos", "recursive": true }`
-- `DELETE /api/index` JSON `{ "path": "D:\\Videos" }` — index only, originals untouched
-- `POST /api/files/upload` multipart form fields `file`, optional `directory`
-- `GET /api/files/download?path=...`
-- `POST /api/files/folder` JSON `{ "parent": "D:\\Videos", "name": "New Folder" }`
-- `POST /api/files/rename` JSON `{ "path": "...", "newName": "..." }`
-- `POST /api/files/move` JSON `{ "path": "...", "destinationDirectory": "..." }`
-- `POST /api/files/copy` JSON `{ "path": "...", "destinationDirectory": "..." }`
-- `DELETE /api/files` JSON `{ "path": "..." }` — sends original to Recycle Bin
-- `GET /api/smb/shares`
-- `POST /api/smb/shares` JSON `{ "name":"Videos", "path":"D:\\Videos", "account":"PC\\media", "access":"Change" }`
-- `DELETE /api/smb/shares/{name}`
-- `GET/POST /api/automation/watches`
-- `DELETE /api/automation/watches/{id}`
-- `POST /api/automation/startup` JSON `{ "enabled": true }`
-- `GET /api/logs?take=100`
-
-## License
-
-Choose a license before publishing publicly. Do not add a license you do not intend to grant.
+Default mount: `C:\ProgramData\MediaHub\Share`, with a `mediahub` subdirectory exported through SMB. `MEDIAHUB_VFS_MOUNT` and `MEDIAHUB_PORT` override the mount directory and HTTP port. Back up `%LOCALAPPDATA%\MediaHub` while the application is stopped, and back up original files separately. Use trusted LANs; do not expose SMB or management ports to the internet.
