@@ -43,34 +43,46 @@ static class SharePermissions
         });
         app.MapPost("/api/smb/permissions", async (Update request, VirtualFileSystem fs, MediaDb db) =>
         {
-            if (!AdminCheck.IsAdministrator()) return Results.Conflict(new { error = "修改共享权限需要管理员权限。" });
             if (request.Users is null || request.Users.Length > 100) return Results.BadRequest(new { error = "最多配置 100 个账户。" });
             await Gate.WaitAsync();
-            var previous = Load();
+            Entry[]? previous = null;
+            var applied = false;
             try
             {
+                previous = Load();
                 var users = request.Users.Select(u => Resolve(u.Account, u.Access)).ToArray();
                 if (users.Select(u => u.Sid).Distinct().Count() != users.Length) throw new ArgumentException("账户重复。" );
+                await ApplySmb(users, previous);
+                applied = true;
                 Save(users);
-                await ApplySmb(users);
                 fs.Dispose(); fs.ReloadPermissions(); fs.Start(db);
                 return Results.Ok(new { ok = true, users, note = "两层权限已应用，请客户端重新连接。" });
             }
             catch (Exception ex)
             {
-                Save(previous);
-                try { await ApplySmb(previous); fs.Dispose(); fs.ReloadPermissions(); fs.Start(db); } catch { }
+                if (previous is not null && applied)
+                {
+                    Save(previous);
+                    try { await ApplySmb(previous); fs.Dispose(); fs.ReloadPermissions(); fs.Start(db); } catch { }
+                }
                 return Results.BadRequest(new { error = ex.Message });
             }
             finally { Gate.Release(); }
         });
     }
-    public static async Task ApplySmb(Entry[] users)
+    public static Task<string> ApplySmb(Entry[] users, Entry[]? rollback = null)
+    {
+        var script = BuildSmbScript(users);
+        if (rollback is not null)
+            script = "try {" + script + "} catch { $failure=$_; try {" + BuildSmbScript(rollback) + "} catch {}; throw $failure }";
+        return Elevation.RunAsync(script);
+    }
+    public static string BuildSmbScript(Entry[] users)
     {
         var script = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $shares=@(Get-SmbShare | Where-Object {$_.Description -eq 'MediaHub managed share' -or $_.Name -eq 'mediahub'}); foreach($share in $shares){" +
             "Get-SmbShareAccess -Name $share.Name | ForEach-Object { if($_.AccessControlType -eq 'Deny'){Unblock-SmbShareAccess -Name $share.Name -AccountName $_.AccountName -Force -Confirm:$false | Out-Null}else{Revoke-SmbShareAccess -Name $share.Name -AccountName $_.AccountName -Force -Confirm:$false | Out-Null} };";
         foreach (var user in users.Where(u => u.Access == "Read")) script += $"Grant-SmbShareAccess -Name $share.Name -AccountName {PowerShell.Quote(user.Account)} -AccessRight Read -Force | Out-Null;";
         foreach (var user in users.Where(u => u.Access == "None")) script += $"Block-SmbShareAccess -Name $share.Name -AccountName {PowerShell.Quote(user.Account)} -Force | Out-Null;";
-        await PowerShell.RunAsync(script + "}");
+        return script + "}";
     }
 }

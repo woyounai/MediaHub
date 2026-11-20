@@ -10,6 +10,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.VisualBasic.FileIO;
 using Microsoft.Win32;
 
+if (args.Contains("--background", StringComparer.OrdinalIgnoreCase)) StartupService.HideConsole();
 if (args.Length == 2 && args[0] == "--index")
 {
     using var client = new HttpClient();
@@ -385,7 +386,7 @@ app.MapPost("/api/automation/startup", async (StartupRequest request) =>
     try
     {
         await StartupService.SetEnabled(request.Enabled);
-        db.Log("startup", "Task Scheduler", request.Enabled ? "Enabled" : "Disabled");
+        db.Log("startup", "HKCU Run", request.Enabled ? "Enabled" : "Disabled");
         return Results.Ok(new { ok = true, enabled = request.Enabled });
     }
     catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
@@ -411,8 +412,6 @@ app.MapPost("/api/smb/shares", async (SmbCreateRequest request) =>
     await shareMutation.WaitAsync();
     try
     {
-        if (!AdminCheck.IsAdministrator())
-            return Results.Conflict(new { error = "创建 SMB 共享需要管理员权限。请关闭 MediaHub，右键 EXE 选择“以管理员身份运行”后再操作。" });
         var name = string.IsNullOrWhiteSpace(request.Name) ? "mediahub" : request.Name.Trim();
         var account = WindowsIdentity.GetCurrent().Name;
         var fs = app.Services.GetRequiredService<VirtualFileSystem>();
@@ -431,8 +430,7 @@ app.MapPost("/api/smb/shares", async (SmbCreateRequest request) =>
                      $"$old=Get-SmbShare -Name $n -ErrorAction SilentlyContinue; if($old){{throw '共享名称已存在，请先在界面删除旧共享。'}}; " +
                      $"New-SmbShare -Name $n -Path $p -Description 'MediaHub managed share' -{access} $a -ErrorAction Stop | Out-Null; " +
                      "'SMB_SHARE_CREATED'";
-        await PowerShell.RunAsync(script);
-        await SharePermissions.ApplySmb(SharePermissions.Load());
+        await Elevation.RunAsync(script + ";" + SharePermissions.BuildSmbScript(SharePermissions.Load()));
         SmbPublisher.Register(full);
         await SmbPublisher.PublishAsync(db);
         db.Log("smb-create", full, $"Share={name}; Account={account}; Access={request.Access}");
@@ -447,9 +445,7 @@ app.MapDelete("/api/smb/shares/{name}", async (string name) =>
 {
     try
     {
-        if (!AdminCheck.IsAdministrator())
-            return Results.Conflict(new { error = "删除 SMB 共享需要管理员权限，请以管理员身份运行 MediaHub。" });
-        await PowerShell.RunAsync($"$ErrorActionPreference='Stop'; Remove-SmbShare -Name {PowerShell.Quote(name)} -Force -Confirm:$false");
+        await Elevation.RunAsync($"$ErrorActionPreference='Stop'; $share=Get-SmbShare -Name {PowerShell.Quote(name)}; if($share.Description -ne 'MediaHub managed share' -and $share.Name -ne 'mediahub'){{throw '只能撤销 MediaHub 管理的共享。'}}; $share | Remove-SmbShare -Force -Confirm:$false");
         db.Log("smb-delete", name, "SMB share removed; original files unchanged");
         return Results.Ok(new { ok = true });
     }

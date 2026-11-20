@@ -1,79 +1,76 @@
 # MediaHub
 
-中文 | English below
+[English](README.en.md)
 
-MediaHub 是 Windows 局域网文件管理工具。WinFsp 将索引中的原文件映射到统一的只读 SMB 共享，文件不复制、不创建硬链接或符号链接。网页提供索引、分类、名称、描述、监控和播放管理。
+## 安装
 
-## 安装与启动
+### 使用 Windows 安装包
 
-1. 在服务器安装 [WinFsp 官方运行时](https://winfsp.dev/rel/)。手机、电视等客户端无需安装。
-2. 源码编译需安装 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。当前本机构建依赖 .NET 10 ASP.NET Core 和 Windows Desktop 运行时；安装 SDK 会包含所需运行环境。只有明确标为 self-contained 的发布包无需另装 .NET。
-3. 在项目根目录执行：
+1. 在作为服务器的 Windows 电脑上安装 [WinFsp](https://winfsp.dev/rel/)，手机、电视等客户端无需安装。
+2. 在 GitHub Actions 中下载 `MediaHub-win-x64` 构建产物，解压整个压缩包到固定目录。该构建包含 .NET 运行时。
+3. 双击 `MediaHub.exe`，以普通权限运行。首次启动会打开网页；之后可双击托盘图标打开。
+4. 打开 `http://127.0.0.1:8765/`。如需连接密钥，在服务器的 `%LOCALAPPDATA%\MediaHub\api.key` 文件中查看。
+5. 手机或其他电脑访问 `http://服务器IP:8765/`，输入同一个 API Key。右上角可切换中文和英文。
+
+### 从源码安装
+
+1. 安装 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。
+2. 安装 WinFsp，并选择 Developer 文件。
+3. 在项目根目录运行：
 
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-and-run.ps1
    ```
 
-   接受管理员提示。脚本关闭旧 MediaHub，编译到 `artifacts/verified` 并启动。源码编译时请安装 WinFsp 的 Developer 文件，确保存在 `WinFsp/bin/winfsp-msil.dll`；自定义位置可传入 `-p:WinFspAssemblyPath=完整DLL路径`。GitHub Actions 会自动安装此依赖。
-4. 打开 `http://127.0.0.1:8765/`，输入 `%LOCALAPPDATA%\MediaHub\api.key` 中的 API Key。不要向他人发送此密钥。
-5. 右上角可切换中文 / English，浏览器会记住选择。手机端隐藏 SMB 和开机启动入口。
+脚本关闭旧进程，编译到 `artifacts/verified` 并后台启动。若旧版以管理员身份运行，请先从托盘退出。此构建依赖 .NET 10 的 ASP.NET Core 和 Windows Desktop 运行时，安装 SDK 会包含它们。
 
-“开机启动”会创建当前服务账户登录时以最高权限运行的计划任务，后台启动并保留托盘图标。旧版设置过的用户需在更新后重新点击一次；应用路径变化后也需重新设置。此功能在用户登录后启动，不是在登录前作为系统服务运行。
+## 使用
 
-## 索引和管理
+### 索引与文件管理
 
-- 浏览服务器文件，点击文件或文件夹的“索引”；文件夹支持递归。索引只记录原文件。
-- 每行“操作”菜单提供名称、显示名称、描述、分类、播放、下载和文件操作。
-- **真实文件名**会重命名原文件，保存前需确认；**显示名称**只改变目录展示，留空恢复真实文件名；描述独立保存。
-- 勾选多个条目可以批量分类或删除索引。删除索引移除虚拟入口，保留原文件；“删除原文件到回收站”会操作真实文件。
-- 文件夹监控可添加多个目录，变化后更新；“同步”可手动扫描。繁忙目录可能丢失监控事件，必要时手动同步。
+- 点击“浏览服务器文件”，选择文件或文件夹进行索引；文件夹支持递归索引。索引不会复制或移动原文件。
+- “上传文件”会将客户端文件复制到服务器当前目录。索引服务器已有文件请使用文件浏览器。
+- 在每行“操作”菜单中修改名称、描述和分类，或执行下载、复制、移动等操作。
+- 修改“真实文件名”会重命名原文件；“显示名称”和描述只修改索引信息。
+- 勾选多项可批量修改分类或移除索引。移除索引保留原文件；“删除原文件到回收站”会操作原文件。
+- 在“文件夹监控”中添加目录，文件变化后自动更新；点击“同步”可手动扫描。
 
-## SMB 共享和多用户
+### SMB 共享
 
-1. 在网页“SMB 共享管理”创建唯一共享，默认名 `mediahub`。后端使用 WinFsp 挂载中的 `mediahub` 子目录，不能将任意真实目录作为聚合共享。
-2. 在“共享用户与权限”选择已有 Windows 用户，设置“允许读取”或“禁止访问”，点击“应用到 SMB 和 WinFsp”。两层权限同步生效；会短暂断开连接，需要重连。
-3. 客户端连接 `\\服务器IP\mediahub`，用户名使用 `服务器电脑名\本地用户名`，密码为该账户密码，不是 Windows Hello PIN。
-4. 无密码微软账户可另建专用本地账户。在管理员终端执行 `net user mediahub * /add`，按提示设置密码，再在网页授权。不要将它加入管理员组。
-5. 当前 SMB 为只读。源文件由服务进程读取，该进程必须拥有原文件访问权限。勿向不可信用户开放含私密文件的索引。
+1. 在服务器网页打开“SMB 共享”，创建一个共享，默认名为 `mediahub`。
+2. 在“共享用户与权限”中添加已有 Windows 账户，选择“允许读取”或“禁止访问”，点击“应用到 SMB 和 WinFsp”。
+3. 在服务器桌面接受管理员授权。只有创建、撤销共享或修改共享权限时才需要授权，主程序继续以普通权限运行。
+4. 客户端连接 `\\服务器IP\mediahub`，使用 `服务器电脑名\用户名` 和该账户的 Windows 密码，不是 Windows Hello PIN。
+5. 修改权限后重新连接共享。共享为只读，程序运行账户必须能读取原文件。
 
-默认挂载根目录：`C:\ProgramData\MediaHub\Share`；共享子目录为 `mediahub`。可在启动前通过 `MEDIAHUB_VFS_MOUNT` 调整空挂载目录，通过 `MEDIAHUB_PORT` 调整网页端口。
+如需独立的共享账户，可在管理员终端执行 `net user mediahub * /add`，设置密码后在网页中授权。
 
-## 播放
+### 播放
 
-- “播放（本地播放器）”为当前浏览设备生成 12 小时有效的 HTTP 串流地址。安卓可唤起兼容播放器，iOS 可打开 VLC；电脑可下载 M3U 后用关联播放器打开，也可复制串流地址。
-- “远程 DLNA 播放”扫描服务器所在局域网，选择接收设备后发送播放请求。电视需启用 DLNA，且能访问服务器端口。
-- HTTP 和 DLNA 直接读取原文件，支持 HTTP 分段读取，不经过 SMB。无转码，播放能力取决于客户端。
+- “播放（本地播放器）”：安卓打开兼容播放器，iPhone/iPad 打开已安装的 VLC，电脑下载 M3U 后使用关联播放器打开。也可复制串流地址到其他播放器，地址有效期为 12 小时。
+- “远程 DLNA 播放”：点击扫描，选择接收设备后播放。扫描由服务器执行，设备需与服务器处于同一局域网，开启 DLNA 接收并能访问服务器端口。
+- 播放直接读取原文件，不转码；格式支持取决于播放器或电视。
 
-## 停止、备份和排障
+### 启动、退出与设置
 
-- 双击托盘图标打开网页；右键“退出 MediaHub”停止服务并卸载 WinFsp。共享配置保留，重启程序后可重连。
-- 虚拟文件系统目前随 MediaHub 进程运行，不是独立安装的 Windows 服务。
-- 数据库和权限配置在 `%LOCALAPPDATA%\MediaHub`。退出程序后备份整个目录；原文件另行备份。
-- 安卓“拒绝访问”：核对账户和密码，在网页同时授权 SMB/WinFsp，清理旧连接后重连。
-- 无法看到共享：确认程序运行、WinFsp 挂载成功；Windows 专用网络允许“文件和打印机共享”。网页/API 需要放行所用端口，默认 TCP 8765。不要将 SMB 或管理端口转发到公网。
-- 依赖安全检查：`dotnet list src/MediaHub/MediaHub.csproj package --vulnerable --include-transitive`。
+- 点击“开机启动”注册当前用户的普通启动项，可在 Windows“启动应用”中启用或禁用，用户登录后后台运行。迁移旧版时会删除旧计划任务，可能需要一次管理员授权。
+- 移动程序目录后，重新设置开机启动。手机端隐藏 SMB 和开机启动入口。
+- 双击托盘图标打开网页，右键“退出 MediaHub”停止程序并卸载虚拟文件系统。共享配置保留，下次启动后可重连。
+- 在“API Key 管理”中更改连接密钥；其他设备需使用新密钥重新连接。
+- 默认网页端口为 `8765`，挂载目录为 `C:\ProgramData\MediaHub\Share`。如需调整，在启动前设置：
 
----
+  ```powershell
+  $env:MEDIAHUB_PORT = '8766'
+  $env:MEDIAHUB_VFS_MOUNT = 'C:\MediaHubMount'
+  .\MediaHub.exe
+  ```
 
-## English — Installation
+  自定义挂载目录必须为空，且程序账户必须能管理其父目录。挂载目录变化后需重新配置共享。
 
-MediaHub manages original Windows files and projects indexed files into one read-only SMB share using WinFsp. Files are not copied or linked.
+### 备份与连接问题
 
-1. Install the official [WinFsp runtime](https://winfsp.dev/rel/) on the server only.
-2. Install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) to build. Framework-dependent builds require ASP.NET Core and Windows Desktop runtimes; the SDK supplies them. Only explicitly self-contained releases include their own .NET runtime.
-3. Run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-and-run.ps1` in the repository root. Accept elevation. This stops the previous process, publishes to `artifacts/verified`, then starts MediaHub.
-4. Open `http://127.0.0.1:8765/`. Enter the API key from `%LOCALAPPDATA%\MediaHub\api.key`.
-5. Use the top-right language button to switch Chinese / English. The setting is remembered locally.
-
-## English — Usage
-
-- Browse and index existing server files or folders. Indexing does not move originals.
-- Use each row's Actions menu to edit the actual filename, display name, description and category, or play/download/manage the file. Editing an actual filename renames the original; editing the display name does not.
-- Select rows for batch category changes or index removal. Removing an index removes its virtual entry but keeps the original. Recycling a file affects the original.
-- Add multiple folder watches; changes update the catalogue. Use Sync for a manual scan.
-- In SMB management, create the single `mediahub` share. Select Windows accounts, choose Allow read or Deny access, then apply to both SMB and WinFsp. Clients must reconnect after permission updates.
-- Connect to `\\SERVER-IP\mediahub` with `SERVER-NAME\username` and the Windows account password, not a PIN. Passwordless Microsoft account users can create a dedicated local account with `net user mediahub * /add`, then grant it access in MediaHub.
-- Local playback provides a temporary HTTP URL, Android app launch, iOS VLC support and desktop M3U playlists. DLNA scans the server LAN and sends playback to the selected receiver. No transcoding is provided.
-- Exiting through the tray stops the server and unmounts WinFsp. Restart MediaHub to restore access. The filesystem currently shares the application lifecycle rather than running as a separate Windows service.
-
-Default mount: `C:\ProgramData\MediaHub\Share`, with a `mediahub` subdirectory exported through SMB. `MEDIAHUB_VFS_MOUNT` and `MEDIAHUB_PORT` override the mount directory and HTTP port. Back up `%LOCALAPPDATA%\MediaHub` while the application is stopped, and back up original files separately. Use trusted LANs; do not expose SMB or management ports to the internet.
+- 退出程序后备份 `%LOCALAPPDATA%\MediaHub`；原文件需另行备份。
+- 网页无法连接：确认程序运行，并在 Windows 防火墙中允许使用的 TCP 端口，默认 `8765`。
+- SMB 无法连接：确认 WinFsp 已安装、程序运行，且 Windows 专用网络允许“文件和打印机共享”。核对账户密码和网页授权，清除旧连接后重试。
+- DLNA 无设备：确认接收功能已开启，服务器与设备处于同一局域网，防火墙允许设备发现，再重新扫描。
+- 仅在可信局域网使用，不要将 SMB 或管理端口转发到公网。

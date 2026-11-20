@@ -1,39 +1,30 @@
 using System.Security.Principal;
-using System.Text;
+using System.Runtime.InteropServices;
 using Microsoft.Win32;
 
 static class StartupService
 {
     public static async Task SetEnabled(bool enabled)
     {
-        if (!AdminCheck.IsAdministrator()) throw new InvalidOperationException("设置开机启动需要管理员权限，请以管理员身份运行 MediaHub。");
         var sid = WindowsIdentity.GetCurrent().User?.Value ?? throw new InvalidOperationException("无法获取当前 Windows 用户。");
         var exe = Environment.ProcessPath ?? throw new InvalidOperationException("无法获取应用路径。");
         if (string.Equals(Path.GetFileNameWithoutExtension(exe), "dotnet", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("请直接运行 MediaHub.exe 后设置开机启动。");
-        await PowerShell.RunAsync(BuildScript(enabled, exe, sid));
-        // Keep the legacy entry until Task Scheduler accepts the configuration.
-        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
-        key?.DeleteValue("MediaHub", false);
-    }
-
-    internal static string BuildScript(bool enabled, string exe, string sid)
-    {
+        var command = $"\"{exe}\" --background";
+        if (enabled && command.Length > 260) throw new InvalidOperationException("应用路径过长，请移到较短的路径后设置启动项。");
         var name = PowerShell.Quote("MediaHub-" + sid);
-        if (!enabled) return $"$ErrorActionPreference='Stop'; $task=Get-ScheduledTask -TaskName {name} -ErrorAction SilentlyContinue; if ($task) {{ $task | Unregister-ScheduledTask -Confirm:$false }}";
-        var launch = $"$ErrorActionPreference='Stop'; Start-Process -FilePath {PowerShell.Quote(exe)} -WorkingDirectory {PowerShell.Quote(Path.GetDirectoryName(exe)!)} -ArgumentList '--background' -WindowStyle Hidden";
-        var arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(launch));
-        var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
-        return $$"""
-            $ErrorActionPreference='Stop'
-            $action=New-ScheduledTaskAction -Execute {{PowerShell.Quote(powershell)}} -Argument {{PowerShell.Quote(arguments)}} -WorkingDirectory {{PowerShell.Quote(Path.GetDirectoryName(exe)!)}}
-            $trigger=New-ScheduledTaskTrigger -AtLogOn -User {{PowerShell.Quote(sid)}}
-            $principal=New-ScheduledTaskPrincipal -UserId {{PowerShell.Quote(sid)}} -LogonType Interactive -RunLevel Highest
-            $settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-            Register-ScheduledTask -TaskName {{name}} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-            $task=Get-ScheduledTask -TaskName {{name}}
-            if ($task.State -eq 'Disabled' -or $task.Principal.RunLevel -ne 'Highest') { throw '开机启动任务验证失败。' }
-            """;
+        var existing = await PowerShell.RunAsync($"$ErrorActionPreference='Stop'; if(Get-ScheduledTask -TaskName {name} -ErrorAction SilentlyContinue){{'EXISTS'}}");
+        if (existing == "EXISTS")
+            await Elevation.RunAsync($"$ErrorActionPreference='Stop'; Get-ScheduledTask -TaskName {name} | Unregister-ScheduledTask -Confirm:$false");
+        using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
+        if (enabled) key.SetValue("MediaHub", command);
+        else key.DeleteValue("MediaHub", false);
     }
+    public static void HideConsole()
+    {
+        var window = GetConsoleWindow();
+        if (window != IntPtr.Zero) ShowWindow(window, 0);
+    }
+    [DllImport("kernel32.dll")] static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
 }
-
