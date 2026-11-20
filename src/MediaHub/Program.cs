@@ -633,18 +633,7 @@ static class FileIndexer
         return count;
     }
 
-    public static string CategoryFor(string path)
-    {
-        if (Directory.Exists(path)) return "文件夹";
-        return Path.GetExtension(path).ToLowerInvariant() switch
-        {
-            ".jpg" or ".jpeg" or ".png" or ".gif" or ".bmp" or ".webp" or ".tif" or ".tiff" or ".heic" or ".raw" => "照片",
-            ".mp4" or ".mkv" or ".avi" or ".mov" or ".wmv" or ".m4v" or ".ts" or ".m2ts" or ".iso" => "电影",
-            ".mp3" or ".flac" or ".wav" or ".aac" or ".m4a" or ".ogg" or ".wma" => "音乐",
-            ".pdf" or ".doc" or ".docx" or ".xls" or ".xlsx" or ".ppt" or ".pptx" or ".txt" or ".md" or ".rtf" or ".csv" => "文档",
-            _ => "其他"
-        };
-    }
+    public static string CategoryFor(string path) => MediaFormats.CategoryFor(path);
 }
 
 static class FileOps

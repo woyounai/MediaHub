@@ -14,7 +14,6 @@ static class DlnaService
     static readonly ConcurrentDictionary<string, Device> Devices = new();
     static readonly ConcurrentDictionary<string, Ticket> Tickets = new();
     static readonly HttpClient Http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(6) };
-    static readonly FileExtensionContentTypeProvider Types = new();
     public static void Map(WebApplication app, int port)
     {
         app.MapPost("/api/player/prepare", (LocalPlayRequest media, HttpRequest request) =>
@@ -23,7 +22,7 @@ static class DlnaService
             {
                 var path = PathGuard.EnsureAllowed(media.Path);
                 if (!File.Exists(path)) return Results.NotFound(new { error = "文件不存在。" });
-                if (!Types.TryGetContentType(path, out var mime) || !(mime.StartsWith("audio/") || mime.StartsWith("video/"))) return Results.BadRequest(new { error = "请选择音频或视频文件。" });
+                if (!MediaFormats.TryGetContentType(path, out var mime) || !MediaFormats.IsPlayable(path)) return Results.BadRequest(new { error = "请选择音频或视频文件。" });
                 foreach (var old in Tickets) if (old.Value.Expires < DateTime.UtcNow) Tickets.TryRemove(old.Key, out _);
                 var token = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
                 Tickets[token] = new(path, DateTime.UtcNow.AddHours(12));
@@ -51,7 +50,7 @@ static class DlnaService
                 if (!Devices.TryGetValue(request.DeviceId, out var device)) return Results.BadRequest(new { error = "请重新扫描并选择设备。" });
                 var path = PathGuard.EnsureAllowed(request.Path);
                 if (!File.Exists(path)) return Results.NotFound(new { error = "媒体文件不存在。" });
-                if (!Types.TryGetContentType(path, out var mime) || !(mime.StartsWith("audio/") || mime.StartsWith("video/") || mime.StartsWith("image/"))) return Results.BadRequest(new { error = "请选择视频、音频或图片文件。" });
+                if (!MediaFormats.TryGetContentType(path, out var mime) || !MediaFormats.IsPlayable(path, true)) return Results.BadRequest(new { error = "请选择视频、音频或图片文件。" });
                 using var socket = new UdpClient(AddressFamily.InterNetwork);
                 socket.Connect(device.Control.Host, device.Control.Port);
                 var address = ((IPEndPoint)socket.Client.LocalEndPoint!).Address;
@@ -72,7 +71,7 @@ static class DlnaService
             if (!Tickets.TryGetValue(token, out var ticket) || ticket.Expires < DateTime.UtcNow) return Results.NotFound();
             var path = PathGuard.EnsureAllowed(ticket.Path);
             if (!File.Exists(path)) return Results.NotFound();
-            Types.TryGetContentType(path, out var mime);
+            MediaFormats.TryGetContentType(path, out var mime);
             response.Headers["transferMode.dlna.org"] = "Streaming";
             return Results.File(path, mime ?? "application/octet-stream", enableRangeProcessing: true);
         });
