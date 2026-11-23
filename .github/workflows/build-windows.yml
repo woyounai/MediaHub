@@ -37,6 +37,13 @@ jobs:
       - name: Restore
         run: dotnet restore src/MediaHub/MediaHub.csproj
 
+      - name: Clear previous artifacts
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath artifacts) {
+            Remove-Item -LiteralPath artifacts -Recurse -Force
+          }
+
       - name: Publish Windows EXE
         run: >
           dotnet publish src/MediaHub/MediaHub.csproj

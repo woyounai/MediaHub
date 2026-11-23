@@ -120,8 +120,10 @@ app.MapGet("/api/browse", (string? path) =>
         if (!Directory.Exists(full)) return Results.BadRequest(new { error = "目录不存在或无法访问。" });
         var parent = Directory.GetParent(full)?.FullName ?? "";
         var entries = new List<object>();
-        foreach (var entry in Directory.EnumerateFileSystemEntries(full).Take(5000))
+        var hasMore = false;
+        foreach (var entry in Directory.EnumerateFileSystemEntries(full).Take(5001))
         {
+            if (entries.Count == 5000) { hasMore = true; break; }
             try
             {
                 var attr = File.GetAttributes(entry);
@@ -145,6 +147,7 @@ app.MapGet("/api/browse", (string? path) =>
         {
             current = full,
             parent,
+            hasMore,
             entries = entries.OrderByDescending(x => (bool)x.GetType().GetProperty("isDirectory")!.GetValue(x)!)
                              .ThenBy(x => (string)x.GetType().GetProperty("name")!.GetValue(x)!, StringComparer.OrdinalIgnoreCase)
         });
