@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MediaHub · 下载中心</title><link rel="icon" href="/icon.png"><link rel="stylesheet" href="/downloads.css"></head>
+<body>
+<header><a href="/">← 媒体库</a><strong>MEDIAHUB / DOWNLOADS</strong></header>
+<main>
+<section class="glass intro"><div><p class="eyebrow">MEDIAHUB × MOTRIX</p><h1>下载中心</h1><p class="muted">服务器下载，完成后加入媒体库。</p></div><button class="primary" id="newTask">＋ 添加下载</button></section>
+<p id="connection" role="status" aria-live="polite"></p>
+<section class="glass workspace" aria-label="下载任务">
+<div class="filters"><nav aria-label="任务状态"><button data-tab="all" aria-pressed="true">全部任务</button><button data-tab="active" aria-pressed="false">进行中</button><button data-tab="completed" aria-pressed="false">已完成</button><button data-tab="error" aria-pressed="false">任务失败</button></nav><input id="searchTasks" type="search" placeholder="搜索下载任务" aria-label="搜索下载任务"><select id="sortTasks" aria-label="排序"><option value="created">添加时间</option><option value="priority">优先级</option><option value="name">名称</option><option value="speed">速度</option><option value="progress">进度</option></select></div>
+<div class="stats"><span id="taskCount"></span><span id="speed"></span><button id="bulkPause">批量暂停</button><button id="bulkResume">批量继续</button><button id="bulkRemove">批量移除</button><select id="bulkPriority" aria-label="批量优先级"><option value="1">高优先级</option><option value="0" selected>普通优先级</option><option value="-1">低优先级</option></select><button id="exportTasks">导出任务</button><label class="import-label">导入任务<input id="importTasks" type="file" accept="application/json,.json" hidden></label><button id="threadSettings">下载设置</button><button id="refreshTasks">刷新</button></div>
+<label class="select-all"><input type="checkbox" id="selectAllTasks">选择当前列表</label>
+<div id="taskList"></div><p id="empty" class="muted">暂无下载任务</p>
+</section>
+<p class="muted footnote">界面组件移植自 Motrix，下载由 MediaHub 管理。BT 默认下载全部文件，不做种。</p>
+</main>
+<dialog id="addDialog" class="glass"><form id="addForm"><div class="dialog-head"><h2>添加下载</h2><button type="button" id="closeAdd">关闭</button></div>
+<label for="downloadSource">下载链接</label><textarea id="downloadSource" rows="3" placeholder="HTTP / HTTPS / FTP / magnet"></textarea>
+<label for="torrentFile">或选择种子文件</label><input id="torrentFile" type="file" accept=".torrent">
+<label for="downloadKind">下载类型</label><select id="downloadKind"><option value="auto">自动识别</option><option value="hls">HLS / m3u8</option></select>
+<label for="downloadName">保存名称（可选）</label><input id="downloadName" maxlength="160">
+<label for="downloadDirectory">服务器下载目录</label><div class="directory-row"><input id="downloadDirectory" required><button type="button" id="chooseDirectory">选择文件夹</button></div>
+<label for="downloadPriority">任务优先级</label><select id="downloadPriority"><option value="1">高</option><option value="0" selected>普通</option><option value="-1">低</option></select>
+<label for="downloadProxy">代理（可选，HTTP/HTTPS/SOCKS5）</label><input id="downloadProxy" placeholder="http://127.0.0.1:7890">
+<label for="downloadUserAgent">User-Agent（可选）</label><input id="downloadUserAgent">
+<label for="downloadHeaders">自定义请求头（每行 Name: Value，可含 Cookie/Referer）</label><textarea id="downloadHeaders" rows="3" placeholder="Referer: https://example.com/&#10;Cookie: session=..."></textarea>
+<label class="checkbox"><input type="checkbox" id="autoIndex" checked>下载完成后自动索引</label>
+<p class="muted">每个任务保存到独立子目录。服务器端代理和请求头会随任务保存；源站凭据会保存在 MediaHub 数据库中。HLS 对特殊播放列表或 SOCKS5 代理可能使用兼容模式。</p>
+<p id="addError" role="alert"></p><button type="submit" class="primary" id="submitTask">开始下载</button>
+</form></dialog>
+<dialog id="threadsDialog" class="glass"><form id="threadsForm"><div class="dialog-head"><h2>多线程管理</h2><button type="button" id="closeThreads">关闭</button></div>
+<label for="maxConcurrentTasks">同时下载任务数（1–8）</label><input type="number" id="maxConcurrentTasks" min="1" max="8" step="1" required>
+<label for="connectionsPerFile">普通文件连接数（1–16）</label><input type="number" id="connectionsPerFile" min="1" max="16" step="1" required>
+<label for="hlsThreads">HLS 分片并发数（1–32）</label><input type="number" id="hlsThreads" min="1" max="32" step="1" required>
+<label for="maxDownloadSpeed">aria2 全局最大速度（字节/秒，0 表示不限）</label><input type="number" id="maxDownloadSpeed" min="0" step="1024" required>
+<label for="scheduledSpeedLimit">定时限速（字节/秒，0 表示不限）</label><input type="number" id="scheduledSpeedLimit" min="0" step="1024" required>
+<div class="directory-row"><label for="scheduleStart">开始时间</label><input type="time" id="scheduleStart"><label for="scheduleEnd">结束时间</label><input type="time" id="scheduleEnd"></div>
+<label for="globalProxy">全局代理（HTTP/HTTPS/SOCKS5，可被任务代理覆盖）</label><input id="globalProxy" placeholder="http://127.0.0.1:7890">
+<p class="muted">超出任务上限时按优先级排队。限速时段按服务器本地时间计算，仅限制 aria2 普通下载和 BT。降低并发上限不会中断现有任务。</p>
+<p class="muted">普通文件需要服务器支持分段下载。BT 由对等节点连接决定；复杂 HLS 列表使用 FFmpeg 顺序兼容模式。</p>
+<p id="threadsError" role="alert"></p><button class="primary" id="saveThreads" type="submit">保存并发设置</button></form></dialog>
+<dialog id="directoryDialog" class="glass"><div class="dialog-head"><h2>选择服务器目录</h2><button id="closeDirectory">关闭</button></div><div class="directory-row"><button id="parentDirectory">上一级</button><button id="rootDirectory">磁盘</button></div><p id="directoryPath" class="download-user-content"></p><div id="directoryList"></div><p id="directoryError" role="alert"></p><button id="selectDirectory" class="primary">选择当前文件夹</button></dialog>
+<dialog id="detailsDialog" class="glass"><div class="dialog-head"><h2 id="detailsTitle">任务详情</h2><button id="closeDetails">关闭</button></div><pre id="detailsBody" class="details-body"></pre></dialog>
+<dialog id="loginDialog" class="glass"><form id="loginForm"><h2>连接 MediaHub</h2><label for="downloadKey">API Key</label><input id="downloadKey" type="password" required autocomplete="off"><p id="loginError" role="alert"></p><button class="primary">连接服务器</button></form></dialog>
+<p id="notice" role="status" aria-live="polite"></p>
+<script type="module" src="/downloads.js"></script><script src="/i18n.js"></script>
+</body></html>

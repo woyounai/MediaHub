@@ -40,9 +40,16 @@ jobs:
       - name: Clear previous artifacts
         shell: pwsh
         run: |
-          if (Test-Path -LiteralPath artifacts) {
-            Remove-Item -LiteralPath artifacts -Recurse -Force
+          $output = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'artifacts'))
+          $expected = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\') + '\artifacts'
+          if ($output -ne $expected) { throw 'Unexpected artifacts path.' }
+          if (Test-Path -LiteralPath $output) {
+            Remove-Item -LiteralPath $output -Recurse -Force
           }
+
+      - name: Prepare portable download tools
+        shell: pwsh
+        run: ./scripts/prepare-download-tools.ps1
 
       - name: Publish Windows EXE
         run: >

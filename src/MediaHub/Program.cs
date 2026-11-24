@@ -26,6 +26,8 @@ builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 20L * 1024 *
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 20L * 1024 * 1024 * 1024);
 builder.Services.AddSingleton<AppPaths>();
 builder.Services.AddSingleton<MediaDb>();
+builder.Services.AddSingleton<DownloadService>();
+builder.Services.AddHostedService<DownloadService>(sp => sp.GetRequiredService<DownloadService>());
 builder.Services.AddSingleton<VirtualFileSystem>();
 builder.Services.AddHostedService<VirtualFileSystemService>();
 builder.Services.AddSingleton<WatchService>();
@@ -41,6 +43,7 @@ var apiKeyLock = new object();
 var port = int.TryParse(Environment.GetEnvironmentVariable("MEDIAHUB_PORT"), out var p) ? p : 8765;
 DlnaService.Map(app, port);
 SharePermissions.Map(app);
+DownloadService.Map(app);
 app.Urls.Clear();
 app.Urls.Add($"http://0.0.0.0:{port}");
 
@@ -48,8 +51,9 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 app.Use(async (ctx, next) =>
 {
+    var oneTimeDownloadTicket = HttpMethods.IsGet(ctx.Request.Method) && ctx.Request.Path.StartsWithSegments("/api/downloads/file-ticket", StringComparison.OrdinalIgnoreCase);
     if (ctx.Request.Path.StartsWithSegments("/api") &&
-        !ctx.Request.Path.Equals("/api/health", StringComparison.OrdinalIgnoreCase))
+        !ctx.Request.Path.Equals("/api/health", StringComparison.OrdinalIgnoreCase) && !oneTimeDownloadTicket)
     {
         var supplied = ctx.Request.Headers["X-MediaHub-Key"].ToString();
         var a = Encoding.UTF8.GetBytes(supplied);
@@ -79,7 +83,7 @@ app.MapPost("/api/security/api-key", (ApiKeyChangeRequest request) =>
     }
     return Results.Ok(new { ok = true, apiKey = next });
 });
-app.MapGet("/api/config", () => Results.Ok(new
+app.MapGet("/api/config", (HttpContext context) => Results.Ok(new
 {
     app = "MediaHub NAS",
     version = "0.1.0",
@@ -92,6 +96,7 @@ app.MapGet("/api/config", () => Results.Ok(new
     inbox = paths.InboxDirectory,
     isAdministrator = WindowsIdentity.GetCurrent().Owner is not null &&
         new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator),
+    localClient = DownloadService.IsLocalClient(context.Connection.RemoteIpAddress),
     roots = PathGuard.GetRoots()
 }));
 
@@ -597,6 +602,7 @@ static class FileIndexer
     {
         var count = 0;
         var full = Path.GetFullPath(path);
+        if (DownloadService.IsIncompletePath(full)) throw new InvalidOperationException("下载尚未完成，不能索引临时文件。");
         if (File.Exists(full)) { db.Upsert(full); return 1; }
         if (!Directory.Exists(full)) throw new FileNotFoundException("路径不存在。", full);
         db.Upsert(full); count++;
@@ -613,6 +619,7 @@ static class FileIndexer
             {
                 try
                 {
+                    if (DownloadService.IsIncompletePath(child)) continue;
                     var attr = File.GetAttributes(child);
                     if ((attr & FileAttributes.ReparsePoint) != 0) continue;
                     db.Upsert(child); count++;
@@ -708,6 +715,7 @@ sealed class MediaDb
     public void Upsert(string path)
     {
         path = System.IO.Path.GetFullPath(path);
+        if (DownloadService.IsIncompletePath(path)) return;
         var isDir = Directory.Exists(path);
         var info = isDir ? (FileSystemInfo)new DirectoryInfo(path) : new FileInfo(path);
         if (!info.Exists) return;

@@ -26,6 +26,18 @@ The script stops the previous process, publishes to `artifacts/verified` and sta
 
 ## Usage
 
+### Download center
+
+- Open Downloads to add HTTP, HTTPS, FTP or magnet URLs, or upload a `.torrent` file up to 8 MB. Portable engines are included in the complete package; Motrix, Node.js, Docker and FFmpeg installation is unnecessary. Source startup downloads pinned versions and verifies SHA-256 checksums.
+- Choose a real server folder. Each task creates a separate `MediaHub-TASK-ID` subfolder. Pause, resume, retry or remove tasks; removing cancels the task and keeps downloaded files. This initial BT integration downloads all files and stops when finished, without seeding.
+- Enable automatic indexing to add completed files to the library and the existing SMB share. Incomplete, failed and cancelled temporary folders are excluded from automatic indexing. Failed indexing can be retried from the task.
+- Tasks support priority, sorting by time/priority/name/speed/progress, bulk pause/resume/remove/priority changes, JSON import/export, task details and connection status. Per-task HTTP/HTTPS/SOCKS5 proxies and User-Agent/custom headers/Cookies are supported. Global settings provide a speed limit, a server-local-time schedule and a global proxy. Source URLs, proxies and headers are stored in the MediaHub database; protect its data directory.
+- Download settings control concurrent tasks (1–8), connections per file (1–16), HLS segments (1–32), aria2 speed limits and scheduled limits. Queued tasks are admitted by priority. File connections depend on range support and file size; BT connections depend on peers. Speed limits do not cover HLS FFmpeg compatibility transfers.
+- Completed files can be saved to the current browser device. “Open file” and “Open server folder” are shown only in a browser on the server itself. Remote browsers can inspect/copy the server path or download files to the client; webpages cannot launch arbitrary local programs on client devices.
+- Direct downloads and BT retain checkpoint files. Unfinished tasks appear paused after an app restart; choose Resume to continue. Standard on-demand MPEG-TS HLS/m3u8 supports parallel AES-128 segment downloads, key rotation and cached resumption, with FFmpeg remuxing to MP4 without transcoding. Complete segments are reused for an identical playlist; changed playlists or addresses trigger a fresh download. Complex playlists such as live, fMP4, byte ranges or separate audio tracks use sequential compatibility mode and restart on resume. BT imports require selecting the torrent again; DRM, manual Key/IV, BT file selection and Motrix plugins are unsupported. SOCKS5 is unavailable in HLS FFmpeg compatibility mode. Select HLS manually for URLs without an m3u8 extension.
+- Some codecs cannot be muxed into MP4; failures appear on the task. Live playlists finish only when the source ends; this version has no stop-and-save recording action.
+- Status, progress and filter components are adapted from Motrix. Other screens are provided by MediaHub; this is not the complete Motrix Web UI.
+
 ### Index and manage files
 
 - Choose Browse server files and index files or folders. Folder indexing can be recursive. Indexing does not copy or move originals.

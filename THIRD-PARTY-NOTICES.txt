@@ -1,0 +1,44 @@
+MediaHub download integration
+
+Motrix UI adaptations
+Source: https://github.com/agalwood/Motrix
+Revision: e17aed07b40f65f17e12795adbffafd3e97774f2 (2.4.5)
+Adapted: downloads/filter.ts (tab/search logic), lib/task-views.ts (active
+statuses), lib/format.ts (formatProgressPercent), downloads/task-progress.tsx
+and status-pill.tsx (DOM ports of progress/status presentation).
+MediaHub uses its own plain-JavaScript shell, API and glass styling. It does
+not embed the full React application or implement Motrix's plugin platform.
+
+The MIT License
+Copyright 2018-present Dr_rOot
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+Portable tools (separate executable processes)
+aria2: 1.37.0-motrix.25, GPL-2.0-or-later, with bundled third-party components.
+https://github.com/motrixapp/aria2/tree/v1.37.0-motrix.25
+Binary source/build information and package notices:
+https://github.com/motrixapp/aria2/releases/tag/v1.37.0-motrix.25
+
+FFmpeg: Gyan 9.0.2 essentials build, GPLv3, including third-party libraries.
+https://www.gyan.dev/ffmpeg/builds/
+https://github.com/FFmpeg/FFmpeg/tree/n9.0.2
+Preserve the package's license/readme/build information under tools/licenses.
+Redistributors must also satisfy the corresponding-source requirements for
+the exact tool builds and their included dependencies.

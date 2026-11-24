@@ -24,6 +24,9 @@
   </ItemGroup>
   <ItemGroup>
     <Content Update="wwwroot\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\artifacts\download-tools\*.exe" Link="tools\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\artifacts\download-tools\*.exe-package\**\*" Exclude="..\..\artifacts\download-tools\*.exe-package\**\*.exe;..\..\artifacts\download-tools\*.exe-package\**\*.dll" Link="tools\licenses\%(RecursiveDir)%(Filename)%(Extension)" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\THIRD-PARTY-NOTICES.txt" Link="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
   <Target Name="CheckWinFspReference" BeforeTargets="ResolveAssemblyReferences">
     <Error Condition="!Exists('$(WinFspAssemblyPath)')" Text="WinFsp .NET assembly not found: $(WinFspAssemblyPath). Install WinFsp with Developer files, or pass -p:WinFspAssemblyPath=path/to/winfsp-msil.dll." />

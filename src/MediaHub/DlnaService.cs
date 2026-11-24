@@ -30,15 +30,16 @@ static class DlnaService
                 var token = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
                 Tickets[token] = new(path, DateTime.UtcNow.AddHours(12));
                 var origin = $"{request.Scheme}://{request.Host}";
-                return Results.Ok(new { url = $"{origin}/dlna/media/{token}", playlist = $"{origin}/player/playlist/{token}", mime });
+                return Results.Ok(new { url = MediaUrl(origin, token, path), playlist = $"{origin}/player/playlist/{token}", mime });
             }
             catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
         app.MapGet("/player/playlist/{token}", (string token, HttpRequest request) =>
         {
             if (!Tickets.TryGetValue(token, out var ticket) || ticket.Expires < DateTime.UtcNow) return Results.NotFound();
-            var url = $"{request.Scheme}://{request.Host}/dlna/media/{token}";
-            return Results.File(Encoding.UTF8.GetBytes("#EXTM3U\n" + url + "\n"), "audio/x-mpegurl", "MediaHub.m3u");
+            var url = MediaUrl($"{request.Scheme}://{request.Host}", token, ticket.Path);
+            var name = Path.GetFileName(ticket.Path).Replace("\r", " ").Replace("\n", " ");
+            return Results.File(Encoding.UTF8.GetBytes($"#EXTM3U\n#EXTINF:-1,{name}\n{url}\n"), "audio/x-mpegurl", "MediaHub.m3u");
         });
         app.MapGet("/api/dlna/devices", async (HttpResponse response) =>
         {
@@ -61,7 +62,7 @@ static class DlnaService
                 foreach (var entry in Tickets) if (entry.Value.Expires < DateTime.UtcNow) Tickets.TryRemove(entry.Key, out _);
                 token = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
                 Tickets[token] = new(path, DateTime.UtcNow.AddHours(12));
-                var url = $"http://{address}:{port}/dlna/media/{token}";
+                var url = MediaUrl($"http://{address}:{port}", token, path);
                 XNamespace didl = "urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/", dc = "http://purl.org/dc/elements/1.1/", upnp = "urn:schemas-upnp-org:metadata-1-0/upnp/";
                 var metadata = new XElement(didl + "DIDL-Lite", new XElement(didl + "item", new XAttribute("id", "1"), new XAttribute("parentID", "0"), new XAttribute("restricted", "1"), new XElement(dc + "title", Path.GetFileName(path)), new XElement(upnp + "class", mime.StartsWith("audio/") ? "object.item.audioItem.musicTrack" : mime.StartsWith("image/") ? "object.item.imageItem.photo" : "object.item.videoItem"), new XElement(didl + "res", new XAttribute("protocolInfo", $"http-get:*:{mime}:*"), url))).ToString(SaveOptions.DisableFormatting);
                 await Soap(device, "SetAVTransportURI", new XElement("CurrentURI", url), new XElement("CurrentURIMetaData", metadata));
@@ -70,15 +71,19 @@ static class DlnaService
             }
             catch (Exception ex) { if (token is not null) Tickets.TryRemove(token, out _); return Results.BadRequest(new { error = "设备未接受播放：" + ex.Message }); }
         });
-        app.MapGet("/dlna/media/{token}", (string token, HttpResponse response) =>
-        {
-            if (!Tickets.TryGetValue(token, out var ticket) || ticket.Expires < DateTime.UtcNow) return Results.NotFound();
-            var path = PathGuard.EnsureAllowed(ticket.Path);
-            if (!File.Exists(path)) return Results.NotFound();
-            MediaFormats.TryGetContentType(path, out var mime);
-            response.Headers["transferMode.dlna.org"] = "Streaming";
-            return Results.File(path, mime ?? "application/octet-stream", enableRangeProcessing: true);
-        });
+        app.MapGet("/dlna/media/{token}/{fileName}", (string token, string fileName, HttpResponse response) => ServeMedia(token, response));
+        app.MapGet("/dlna/media/{token}", (string token, HttpResponse response) => ServeMedia(token, response));
+    }
+    static string MediaUrl(string origin, string token, string path) =>
+        $"{origin.TrimEnd('/')}/dlna/media/{token}/{Uri.EscapeDataString(Path.GetFileName(path))}";
+    static IResult ServeMedia(string token, HttpResponse response)
+    {
+        if (!Tickets.TryGetValue(token, out var ticket) || ticket.Expires < DateTime.UtcNow) return Results.NotFound();
+        var path = PathGuard.EnsureAllowed(ticket.Path);
+        if (!File.Exists(path)) return Results.NotFound();
+        MediaFormats.TryGetContentType(path, out var mime);
+        response.Headers["transferMode.dlna.org"] = "Streaming";
+        return Results.File(path, mime ?? "application/octet-stream", enableRangeProcessing: true);
     }
     static Task Discover()
     {
